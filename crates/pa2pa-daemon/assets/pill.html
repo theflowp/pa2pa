@@ -24,18 +24,16 @@
       justify-content: flex-end;
       width: 100%;
       height: 100%;
-      padding: 6px;
+      padding: 2px;
+      background: transparent !important;
     }
     .card {
       width: 100%;
-      background: rgba(15, 18, 28, 0.94);
-      backdrop-filter: blur(22px);
-      -webkit-backdrop-filter: blur(22px);
-      border: 1px solid rgba(255, 255, 255, 0.13);
+      background: rgba(15, 18, 28, 0.96);
+      border: 1px solid rgba(255, 255, 255, 0.14);
       border-radius: 18px;
-      padding: 14px;
+      padding: 13px 14px;
       margin-bottom: 8px;
-      box-shadow: 0 18px 42px rgba(0, 0, 0, 0.55);
       display: none;
     }
     .card.open { display: block; }
@@ -43,15 +41,27 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      margin-bottom: 8px;
+      gap: 8px;
+      margin-bottom: 6px;
       font-size: 12px;
     }
     .peer-badge {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
+      gap: 8px;
       font-weight: 700;
       font-size: 13px;
+    }
+    .contacts-meta {
+      font-weight: 500;
+      font-size: 11.5px;
+      color: #8c98b3;
+    }
+    .min-btn {
+      width: 24px;
+      height: 24px;
+      font-size: 15px;
+      line-height: 1;
     }
     .tag {
       background: rgba(251, 191, 36, 0.18);
@@ -66,6 +76,10 @@
       font-size: 11.5px;
       color: #9ba8c4;
       margin-bottom: 8px;
+      line-height: 1.4;
+    }
+    .reason:last-child {
+      margin-bottom: 0;
     }
     .msg-box {
       background: rgba(255, 255, 255, 0.05);
@@ -132,15 +146,12 @@
       max-width: 100%;
       padding: 0 10px 0 14px;
       border-radius: 999px;
-      background: rgba(15, 18, 28, 0.92);
-      backdrop-filter: blur(22px);
-      -webkit-backdrop-filter: blur(22px);
-      border: 1px solid rgba(255, 255, 255, 0.14);
-      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.48);
+      background: rgba(15, 18, 28, 0.96);
+      border: 1px solid rgba(255, 255, 255, 0.16);
     }
     .pill.alert {
-      border-color: rgba(251, 191, 36, 0.65);
-      box-shadow: 0 0 24px rgba(251, 191, 36, 0.28), 0 12px 30px rgba(0, 0, 0, 0.48);
+      border-color: rgba(251, 191, 36, 0.75);
+      box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.35);
     }
     .drag-zone {
       display: flex;
@@ -224,12 +235,25 @@
       return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     }
 
+    function syncWindowHeight() {
+      if (!expanded) {
+        postIpc({ type: 'resize', expanded: false });
+        return;
+      }
+      requestAnimationFrame(() => {
+        const card = document.getElementById('card');
+        const pill = document.getElementById('pill');
+        const totalH = Math.ceil(card.offsetHeight + pill.offsetHeight + 14);
+        postIpc({ type: 'resize', expanded: true, height: totalH });
+      });
+    }
+
     function setExpanded(next) {
       expanded = next;
       document.getElementById('card').classList.toggle('open', expanded);
       document.getElementById('toggle-btn').textContent = expanded ? '▼' : '▲';
-      postIpc({ type: 'resize', expanded });
       renderCard();
+      syncWindowHeight();
     }
 
     function toggleExpand() {
@@ -324,17 +348,19 @@
       if (!expanded) return;
 
       if (pendingApprovals.length === 0) {
+        const n = Number(statusData?.contacts_count || 0);
+        const contactsLabel = `${n} contact${n > 1 ? 's' : ''}`;
         card.innerHTML = `
           <div class="card-head">
-            <span class="peer-badge">@${esc(statusData?.name || 'pa2pa')}</span>
-            <span style="color:#8c98b3">${statusData?.contacts_count || 0} contacts</span>
+            <span class="peer-badge">
+              @${esc(statusData?.name || 'pa2pa')}
+              <span class="contacts-meta">${contactsLabel}</span>
+            </span>
+            <button class="icon-btn min-btn" data-action="minimize" title="Minimize">−</button>
           </div>
           <div class="reason">No pending approvals. Your personal agent is standing by (${esc(statusData?.default_runner || 'claude')}).</div>
-          <div class="actions">
-            <button class="btn-primary" data-action="open-dashboard">Open Dashboard</button>
-            <button data-action="minimize">Minimize</button>
-          </div>
         `;
+        syncWindowHeight();
         return;
       }
 
@@ -343,7 +369,8 @@
         <div class="card-head">
           <span class="peer-badge">@${esc(ap.peer_alias)} <span class="tag">Approval ${activeIdx + 1}/${pendingApprovals.length}</span></span>
           <div style="display:flex;gap:4px">
-            ${pendingApprovals.length > 1 ? `<button class="icon-btn" data-action="cycle" data-delta="-1">‹</button><button class="icon-btn" data-action="cycle" data-delta="1">›</button>` : ''}
+            ${pendingApprovals.length > 1 ? `<button class="icon-btn min-btn" data-action="cycle" data-delta="-1">‹</button><button class="icon-btn min-btn" data-action="cycle" data-delta="1">›</button>` : ''}
+            <button class="icon-btn min-btn" data-action="minimize" title="Minimize">−</button>
           </div>
         </div>
         <div class="reason">${esc(ap.reason)}</div>
@@ -356,6 +383,7 @@
           <button data-action="open-dashboard">Details</button>
         </div>
       `;
+      syncWindowHeight();
     }
 
     function cycleApproval(delta) {

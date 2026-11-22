@@ -11,8 +11,8 @@ use tray_icon::{Icon, TrayIconBuilder};
 use wry::WebViewBuilder;
 
 const COMPACT_W: f64 = 300.0;
-const COMPACT_H: f64 = 58.0;
-const EXPANDED_W: f64 = 412.0;
+const COMPACT_H: f64 = 48.0;
+const EXPANDED_W: f64 = 396.0;
 const EXPANDED_H: f64 = 392.0;
 const EDGE_MARGIN: f64 = 18.0;
 const CLAMP_MARGIN: f64 = 8.0;
@@ -125,6 +125,43 @@ fn current_work_area(window: &Window) -> Option<WorkArea> {
     })
 }
 
+#[cfg(target_os = "macos")]
+fn enforce_macos_true_transparency(window: &Window, webview: &wry::WebView) {
+    use objc2::runtime::{AnyObject, Bool};
+    use objc2::{msg_send, sel};
+    use objc2_app_kit::NSColor;
+    use objc2_foundation::{ns_string, NSNumber};
+    use tao::platform::macos::WindowExtMacOS;
+    use wry::WebViewExtMacOS;
+
+    unsafe {
+        let clear = NSColor::clearColor();
+        let clear_ptr: *const AnyObject = (&*clear as *const NSColor).cast();
+
+        let ns_win = window.ns_window() as *mut AnyObject;
+        if !ns_win.is_null() {
+            let _: () = msg_send![ns_win, setOpaque: Bool::NO];
+            let _: () = msg_send![ns_win, setHasShadow: Bool::NO];
+            let _: () = msg_send![ns_win, setBackgroundColor: clear_ptr];
+        }
+
+        let wk = webview.webview();
+        let wk_ptr: *mut AnyObject = &*wk as *const _ as *mut AnyObject;
+        if !wk_ptr.is_null() {
+            let no = NSNumber::new_bool(false);
+            let no_ptr: *const AnyObject = (&*no as *const NSNumber).cast();
+            let key = ns_string!("drawsBackground");
+            let _: () = msg_send![wk_ptr, setValue: no_ptr, forKey: key];
+
+            let has_under_page: Bool =
+                msg_send![wk_ptr, respondsToSelector: sel!(setUnderPageBackgroundColor:)];
+            if has_under_page.as_bool() {
+                let _: () = msg_send![wk_ptr, setUnderPageBackgroundColor: clear_ptr];
+            }
+        }
+    }
+}
+
 fn position_window_bottom_right(window: &Window, win_w: f64, win_h: f64) {
     if let Some(area) = current_work_area(window) {
         let (x, y) = area.bottom_right_position(win_w, win_h);
@@ -158,6 +195,8 @@ enum TrayVisual {
 enum PillIpc {
     Resize {
         expanded: bool,
+        #[serde(default)]
+        height: Option<f64>,
     },
     Drag,
     OpenDashboard,
@@ -367,7 +406,7 @@ fn main() -> anyhow::Result<()> {
     // Position cleanly at bottom-right of the usable work area (above/beside the Dock/taskbar).
     position_window_bottom_right(&window, COMPACT_W, COMPACT_H);
 
-    let _webview = WebViewBuilder::new()
+    let webview = WebViewBuilder::new()
         .with_transparent(true)
         .with_background_color((0, 0, 0, 0))
         .with_url(&pill_url)
@@ -378,7 +417,12 @@ fn main() -> anyhow::Result<()> {
         })
         .build(&window)?;
 
+    #[cfg(target_os = "macos")]
+    enforce_macos_true_transparency(&window, &webview);
+
     let mut is_expanded = false;
+    let mut cur_w = COMPACT_W;
+    let mut cur_h = COMPACT_H;
     let mut is_visible = !args.start_hidden;
     let mut current_visual = TrayVisual::Offline;
 
@@ -407,12 +451,7 @@ fn main() -> anyhow::Result<()> {
                     is_visible = !is_visible;
                     window.set_visible(is_visible);
                 } else if ev.id == reset_pos_id {
-                    let (w, h) = if is_expanded {
-                        (EXPANDED_W, EXPANDED_H)
-                    } else {
-                        (COMPACT_W, COMPACT_H)
-                    };
-                    position_window_bottom_right(&window, w, h);
+                    position_window_bottom_right(&window, cur_w, cur_h);
                     if !is_visible {
                         is_visible = true;
                         window.set_visible(true);
@@ -478,33 +517,36 @@ fn main() -> anyhow::Result<()> {
                         }
                     }
                 }
-                PillIpc::Resize { expanded } => {
-                    if expanded == is_expanded {
+                PillIpc::Resize { expanded, height } => {
+                    let (new_w, new_h) = if expanded {
+                        let clamped_h = height
+                            .unwrap_or(EXPANDED_H)
+                            .clamp(COMPACT_H + 56.0, EXPANDED_H);
+                        (EXPANDED_W, clamped_h)
+                    } else {
+                        (COMPACT_W, COMPACT_H)
+                    };
+
+                    if expanded == is_expanded
+                        && (new_w - cur_w).abs() < 1.0
+                        && (new_h - cur_h).abs() < 1.0
+                    {
                         return;
                     }
+
                     let scale = window.scale_factor();
                     let cur_pos = window
                         .outer_position()
                         .map(|p| (p.x as f64 / scale, p.y as f64 / scale))
                         .unwrap_or((100.0, 100.0));
-                    let (old_w, old_h) = if is_expanded {
-                        (EXPANDED_W, EXPANDED_H)
-                    } else {
-                        (COMPACT_W, COMPACT_H)
-                    };
-                    let (new_w, new_h) = if expanded {
-                        (EXPANDED_W, EXPANDED_H)
-                    } else {
-                        (COMPACT_W, COMPACT_H)
-                    };
 
                     let (new_x, new_y) = if let Some(area) = current_work_area(&window) {
                         area.clamp_bottom_right_resize(
-                            cur_pos.0, cur_pos.1, old_w, old_h, new_w, new_h,
+                            cur_pos.0, cur_pos.1, cur_w, cur_h, new_w, new_h,
                         )
                     } else {
-                        let right_x = cur_pos.0 + old_w;
-                        let bottom_y = cur_pos.1 + old_h;
+                        let right_x = cur_pos.0 + cur_w;
+                        let bottom_y = cur_pos.1 + cur_h;
                         (
                             (right_x - new_w).max(CLAMP_MARGIN),
                             (bottom_y - new_h).max(28.0),
@@ -514,6 +556,9 @@ fn main() -> anyhow::Result<()> {
                     window.set_inner_size(LogicalSize::new(new_w, new_h));
                     window.set_outer_position(LogicalPosition::new(new_x, new_y));
                     is_expanded = expanded;
+                    cur_w = new_w;
+                    cur_h = new_h;
+                    let _keep_webview = &webview;
                 }
             },
             _ => {}
