@@ -34,23 +34,23 @@
       background: transparent !important;
     }
 
-    /* Liquid Glass surface shared between card & pill (pure GPU gradients, zero resize flicker) */
+    /* Liquid Glass surface shared between card & pill (dense high-contrast frosted glass, zero resize flicker) */
     .glass {
       position: relative;
       isolation: isolate;
       overflow: hidden;
       background:
-        radial-gradient(120% 90% at 18% 0%, rgba(155, 185, 255, 0.16) 0%, rgba(155, 185, 255, 0) 58%),
+        radial-gradient(120% 90% at 18% 0%, rgba(165, 192, 255, 0.15) 0%, rgba(165, 192, 255, 0) 56%),
         linear-gradient(
           160deg,
-          rgba(34, 42, 64, 0.80) 0%,
-          rgba(16, 20, 34, 0.86) 52%,
-          rgba(11, 14, 24, 0.92) 100%
+          rgba(28, 34, 50, 0.94) 0%,
+          rgba(16, 20, 31, 0.96) 52%,
+          rgba(11, 14, 22, 0.98) 100%
         );
-      border: 1px solid rgba(255, 255, 255, 0.20);
+      border: 1px solid rgba(255, 255, 255, 0.22);
       box-shadow:
         inset 0 1px 0 rgba(255, 255, 255, 0.34),
-        inset 0 -1px 0 rgba(255, 255, 255, 0.07),
+        inset 0 -1px 0 rgba(255, 255, 255, 0.08),
         inset 0 0 18px rgba(255, 255, 255, 0.03);
     }
     .glass::before {
@@ -61,7 +61,7 @@
       background: linear-gradient(
         90deg,
         rgba(255, 255, 255, 0) 0%,
-        rgba(255, 255, 255, 0.62) 50%,
+        rgba(255, 255, 255, 0.65) 50%,
         rgba(255, 255, 255, 0) 100%
       );
       pointer-events: none;
@@ -70,15 +70,16 @@
 
     .card-wrap {
       width: 100%;
+      flex-shrink: 0;
       display: none;
       padding-bottom: 8px;
       transform-origin: bottom right;
       will-change: transform, opacity;
       opacity: 0;
-      transform: translate3d(0, 14px, 0) scale(0.93);
+      transform: translate3d(0, 18px, 0) scale(0.92);
       transition:
-        opacity 0.28s cubic-bezier(0.16, 1, 0.3, 1),
-        transform 0.38s cubic-bezier(0.16, 1, 0.3, 1);
+        opacity 0.28s cubic-bezier(0.2, 0.8, 0.2, 1),
+        transform 0.44s cubic-bezier(0.22, 1.10, 0.36, 1);
     }
     .card-wrap.mounted {
       display: block;
@@ -89,10 +90,10 @@
     }
     .card-wrap.closing {
       opacity: 0;
-      transform: translate3d(0, 12px, 0) scale(0.94);
+      transform: translate3d(0, 14px, 0) scale(0.94);
       transition:
-        opacity 0.20s cubic-bezier(0.4, 0, 0.2, 1),
-        transform 0.24s cubic-bezier(0.4, 0, 0.2, 1);
+        opacity 0.24s cubic-bezier(0.4, 0, 0.2, 1),
+        transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
     }
 
     .card {
@@ -227,7 +228,10 @@
       align-items: center;
       justify-content: space-between;
       gap: 10px;
+      flex-shrink: 0;
       height: 44px;
+      min-height: 44px;
+      max-height: 44px;
       min-width: 248px;
       max-width: 100%;
       padding: 0 8px 0 14px;
@@ -378,9 +382,12 @@
 
     function measureExpandedHeight() {
       const wrap = document.getElementById('card-wrap');
-      const pill = document.getElementById('pill');
-      return Math.ceil(wrap.offsetHeight + pill.offsetHeight + 8);
+      // Always guarantee generous room for the card + fixed 44px pill + shell padding so the pill never compresses.
+      const cardH = Math.ceil(wrap.getBoundingClientRect().height || wrap.offsetHeight || 96);
+      return cardH + 44 + 16;
     }
+
+    let openTimer = null;
 
     function setExpanded(next) {
       if (next === expanded) return;
@@ -390,6 +397,10 @@
       if (collapseTimer) {
         clearTimeout(collapseTimer);
         collapseTimer = null;
+      }
+      if (openTimer) {
+        clearTimeout(openTimer);
+        openTimer = null;
       }
 
       const wrap = document.getElementById('card-wrap');
@@ -401,31 +412,30 @@
         wrap.classList.remove('closing', 'open');
         wrap.classList.add('mounted');
 
-        // Expand NSWindow atomically first (at 396px width), measure exact height on next frame
-        // if needed while still invisible, then spring the Liquid Glass card into view.
-        const initialH = measureExpandedHeight();
-        postIpc({ type: 'resize', expanded: true, height: initialH });
+        // Size NSWindow ONCE with ample headroom (extra transparent pixels above the card are invisible),
+        // let WKWebView settle its backing surface for 35ms while card is invisible, then play the
+        // uninterrupted spring entrance animation at full 60/120fps.
+        const targetH = pendingApprovals.length > 0
+          ? Math.max(measureExpandedHeight(), 360)
+          : Math.max(measureExpandedHeight(), 164);
+        postIpc({ type: 'resize', expanded: true, height: targetH });
 
-        requestAnimationFrame(() => {
+        openTimer = setTimeout(() => {
           if (gen !== animGen || !expanded) return;
-          const settledH = measureExpandedHeight();
-          if (Math.abs(settledH - initialH) > 2) {
-            postIpc({ type: 'resize', expanded: true, height: settledH });
-          }
           requestAnimationFrame(() => {
             if (gen !== animGen || !expanded) return;
             wrap.classList.add('open');
           });
-        });
+        }, 35);
       } else {
-        // Animate the card smoothly down into the pill first, then shrink NSWindow cleanly.
+        // Play the full smooth collapse transition first, then shrink NSWindow atomically.
         wrap.classList.remove('open');
         wrap.classList.add('closing');
         collapseTimer = setTimeout(() => {
           if (gen !== animGen || expanded) return;
           wrap.classList.remove('mounted', 'closing');
           postIpc({ type: 'resize', expanded: false });
-        }, 250);
+        }, 290);
       }
     }
 
