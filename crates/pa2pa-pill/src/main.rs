@@ -127,9 +127,34 @@ fn build_tray_icon(state: TrayVisual) -> anyhow::Result<Icon> {
     Ok(Icon::from_rgba(rgba, SIZE as u32, SIZE as u32)?)
 }
 
+fn validate_loopback_daemon_url(url: &str) -> anyhow::Result<String> {
+    let trimmed = url.trim().trim_end_matches('/');
+    let rest = trimmed
+        .strip_prefix("http://")
+        .ok_or_else(|| anyhow::anyhow!("pa2pa-pill only connects to loopback http:// URLs"))?;
+    let host_port = rest.split('/').next().unwrap_or("");
+    let ok = host_port == "127.0.0.1"
+        || host_port == "localhost"
+        || host_port == "[::1]"
+        || host_port
+            .rsplit_once(':')
+            .map(|(h, p)| {
+                matches!(h, "127.0.0.1" | "localhost" | "[::1]")
+                    && !p.is_empty()
+                    && p.chars().all(|c| c.is_ascii_digit())
+            })
+            .unwrap_or(false);
+    if !ok {
+        anyhow::bail!(
+            "Refusing to load non-loopback URL `{url}` into pa2pa-pill WebView (security policy)"
+        );
+    }
+    Ok(trimmed.to_string())
+}
+
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let base_url = args.url.trim_end_matches('/').to_string();
+    let base_url = validate_loopback_daemon_url(&args.url)?;
     let pill_url = format!("{base_url}/pill");
 
     #[cfg(target_os = "macos")]

@@ -14,12 +14,30 @@ $Target = "x86_64-pc-windows-msvc"
 $Installed = $false
 
 if ($Repo) {
-    $Url = "https://github.com/$Repo/releases/latest/download/pa2pa-$Target.zip"
-    $TmpZip = Join-Path $env:TEMP "pa2pa-$Target.zip"
+    $ArchiveName = "pa2pa-$Target.zip"
+    $BaseUrl = "https://github.com/$Repo/releases/latest/download"
+    $Url = "$BaseUrl/$ArchiveName"
+    $SumsUrl = "$BaseUrl/SHA256SUMS.txt"
+    $TmpZip = Join-Path $env:TEMP $ArchiveName
+    $TmpSums = Join-Path $env:TEMP "pa2pa-SHA256SUMS.txt"
     $TmpDir = Join-Path $env:TEMP "pa2pa-extract-$(Get-Random)"
     try {
         Write-Host "==> Downloading prebuilt pa2pa from $Url..."
         Invoke-WebRequest -Uri $Url -OutFile $TmpZip -UseBasicParsing
+        try {
+            Invoke-WebRequest -Uri $SumsUrl -OutFile $TmpSums -UseBasicParsing
+            $Match = Select-String -Path $TmpSums -Pattern " $ArchiveName$" | Select-Object -First 1
+            if ($Match) {
+                $Expected = ($Match.Line -split '\s+')[0].ToLower()
+                $Actual = (Get-FileHash -Path $TmpZip -Algorithm SHA256).Hash.ToLower()
+                if ($Expected -ne $Actual) {
+                    throw "SHA256 checksum mismatch for $ArchiveName (expected $Expected, got $Actual)"
+                }
+                Write-Host "==> Verified SHA256 checksum ($($Actual.Substring(0,12))...)"
+            }
+        } catch {
+            if ($_.Exception.Message -like "*checksum mismatch*") { throw }
+        }
         Expand-Archive -Path $TmpZip -DestinationPath $TmpDir -Force
         Copy-Item (Join-Path $TmpDir "pa2pa.exe") (Join-Path $InstallDir "pa2pa.exe") -Force
         if (Test-Path (Join-Path $TmpDir "pa2pa-pill.exe")) {
@@ -27,9 +45,11 @@ if ($Repo) {
         }
         $Installed = $true
     } catch {
+        if ($_.Exception.Message -like "*checksum mismatch*") { throw }
         Write-Host "Prebuilt release not found, falling back to building from source..."
     } finally {
         Remove-Item $TmpZip -ErrorAction SilentlyContinue
+        Remove-Item $TmpSums -ErrorAction SilentlyContinue
         Remove-Item $TmpDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 }

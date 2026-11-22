@@ -25,9 +25,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
-use tokio::sync::{broadcast, mpsc, Notify, RwLock};
+use tokio::sync::{broadcast, mpsc, Notify, RwLock, Semaphore};
+use tokio::time::timeout;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+const MAX_CONCURRENT_P2P_STREAMS: usize = 32;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct DaemonEvent {
@@ -239,17 +242,24 @@ pub async fn run_daemon(paths: Pa2paPaths, ui_bind_override: Option<String>) -> 
     Ok(())
 }
 
-/// Accept incoming direct P2P QUIC connections, strictly gated by SSH Ed25519 contact whitelist.
+/// Accept incoming direct P2P QUIC connections, strictly gated by SSH Ed25519 contact whitelist,
+/// bounded concurrency, and per-stage timeouts against slow-loris/DoS.
 async fn p2p_accept_loop(state: Arc<DaemonState>) {
     let ep = match state.p2p_endpoint.read().await.clone() {
         Some(e) => e,
         None => return,
     };
+    let sem = Arc::new(Semaphore::new(MAX_CONCURRENT_P2P_STREAMS));
 
     while let Some(incoming) = ep.accept().await {
+        let Ok(permit) = sem.clone().try_acquire_owned() else {
+            tracing::warn!("Dropping incoming P2P connection: concurrency limit reached");
+            continue;
+        };
         let st = state.clone();
         tokio::spawn(async move {
-            let Ok(conn) = incoming.await else {
+            let _permit = permit;
+            let Ok(Ok(conn)) = timeout(Duration::from_secs(8), incoming).await else {
                 return;
             };
             let remote_id = conn.remote_id();
@@ -265,6 +275,11 @@ async fn p2p_accept_loop(state: Arc<DaemonState>) {
                 conn.close(1u32.into(), b"not_whitelisted");
                 return;
             };
+            if contact.trust == pa2pa_core::TrustLevel::Muted {
+                tracing::debug!(peer = %contact.alias, "Rejected P2P connection from muted contact");
+                conn.close(2u32.into(), b"muted");
+                return;
+            }
 
             // Mark peer online immediately
             {
@@ -273,14 +288,20 @@ async fn p2p_accept_loop(state: Arc<DaemonState>) {
             }
             st.emit(DaemonEvent::refresh("p2p_peer_seen"));
 
-            let Ok((mut send, mut recv)) = conn.accept_bi().await else {
+            let Ok(Ok((mut send, mut recv))) =
+                timeout(Duration::from_secs(8), conn.accept_bi()).await
+            else {
                 return;
             };
 
-            let frame = match read_p2p_frame(&mut recv).await {
-                Ok(f) => f,
-                Err(e) => {
+            let frame = match timeout(Duration::from_secs(10), read_p2p_frame(&mut recv)).await {
+                Ok(Ok(f)) => f,
+                Ok(Err(e)) => {
                     tracing::debug!(peer = %contact.alias, error = %e, "Invalid P2P frame");
+                    return;
+                }
+                Err(_) => {
+                    tracing::debug!(peer = %contact.alias, "Timed out reading P2P frame");
                     return;
                 }
             };
@@ -290,17 +311,24 @@ async fn p2p_accept_loop(state: Arc<DaemonState>) {
                     let _ = write_p2p_response_and_flush(&mut send, &P2pFrame::Pong).await;
                 }
                 P2pFrame::Activity { thread_id, state: act } => {
-                    let mut map = st.thinking_peers.write().await;
-                    match act {
-                        PeerActivityState::Thinking => {
-                            map.insert(contact.alias.clone(), thread_id);
+                    let safe_tid = !thread_id.is_empty()
+                        && thread_id.len() <= 64
+                        && thread_id
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+                    if safe_tid {
+                        let mut map = st.thinking_peers.write().await;
+                        match act {
+                            PeerActivityState::Thinking => {
+                                map.insert(contact.alias.clone(), thread_id);
+                            }
+                            PeerActivityState::Idle => {
+                                map.remove(&contact.alias);
+                            }
                         }
-                        PeerActivityState::Idle => {
-                            map.remove(&contact.alias);
-                        }
+                        drop(map);
+                        st.emit(DaemonEvent::refresh("peer_activity"));
                     }
-                    drop(map);
-                    st.emit(DaemonEvent::refresh("peer_activity"));
                     let _ = write_p2p_response_and_flush(&mut send, &P2pFrame::Pong).await;
                 }
                 P2pFrame::Deliver { envelope } => {

@@ -111,6 +111,7 @@ pub async fn run_agent_responder(
 
     let (program, args, sandboxed) = maybe_wrap_os_sandbox(
         config.daemon.os_sandbox && *mode == ExecutionMode::ReadOnly,
+        paths,
         &raw_program,
         raw_args,
     );
@@ -128,6 +129,7 @@ pub async fn run_agent_responder(
     let mut cmd = Command::new(&program);
     cmd.args(&args)
         .current_dir(&workdir)
+        .env_remove("PA2PA_SSH_PASSPHRASE")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -345,6 +347,7 @@ fn build_command(
 
 fn maybe_wrap_os_sandbox(
     enable: bool,
+    paths: &Pa2paPaths,
     program: &str,
     args: Vec<String>,
 ) -> (String, Vec<String>, bool) {
@@ -356,15 +359,33 @@ fn maybe_wrap_os_sandbox(
     {
         if std::path::Path::new("/usr/bin/sandbox-exec").is_file() {
             // Seatbelt profile: allow normal execution/network/reads, deny reading sensitive credential
-            // directories (~/.ssh, ~/.aws, ~/.gnupg) and deny writes outside /tmp & /private/tmp.
+            // directories (~/.ssh, ~/.aws, ~/.gnupg) and pa2pa's own private keys / daemon token / DB,
+            // and deny writes outside /tmp & /private/tmp.
             let mut deny_rules = String::new();
+            let esc = |p: &std::path::Path| {
+                p.to_string_lossy()
+                    .replace('\\', "\\\\")
+                    .replace('"', "\\\"")
+            };
             if let Some(home) = std::env::var_os("HOME") {
-                let h = home.to_string_lossy().replace('"', "");
+                let home_path = PathBuf::from(home);
                 for sensitive in [".ssh", ".aws", ".gnupg"] {
                     deny_rules.push_str(&format!(
-                        "(deny file-read* (subpath \"{h}/{sensitive}\"))\n"
+                        "(deny file-read* (subpath \"{}\"))\n",
+                        esc(&home_path.join(sensitive))
                     ));
                 }
+            }
+            for secret_file in [
+                paths.dedicated_key_path(),
+                paths.daemon_token_path(),
+                paths.db_path(),
+                paths.config_path(),
+            ] {
+                deny_rules.push_str(&format!(
+                    "(deny file-read* (literal \"{}\"))\n",
+                    esc(&secret_file)
+                ));
             }
             let profile = format!(
                 "(version 1)\n\
@@ -394,11 +415,19 @@ fn maybe_wrap_os_sandbox(
                 "/tmp".to_string(),
             ];
             if let Some(home) = std::env::var_os("HOME") {
-                let ssh_dir = PathBuf::from(&home).join(".ssh");
-                if ssh_dir.is_dir() {
-                    wrapped.push("--tmpfs".to_string());
-                    wrapped.push(ssh_dir.display().to_string());
+                let home_path = PathBuf::from(&home);
+                for sensitive in [".ssh", ".aws", ".gnupg"] {
+                    let dir = home_path.join(sensitive);
+                    if dir.is_dir() {
+                        wrapped.push("--tmpfs".to_string());
+                        wrapped.push(dir.display().to_string());
+                    }
                 }
+            }
+            // Hide pa2pa's own keys, token, and SQLite DB from the sandboxed runner
+            if paths.home.is_dir() {
+                wrapped.push("--tmpfs".to_string());
+                wrapped.push(paths.home.display().to_string());
             }
             wrapped.push("--".to_string());
             wrapped.push(program.to_string());
@@ -407,6 +436,7 @@ fn maybe_wrap_os_sandbox(
         }
     }
 
+    let _ = paths;
     (program.to_string(), args, false)
 }
 

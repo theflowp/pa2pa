@@ -36,12 +36,36 @@ esac
 
 install_from_release() {
   local repo="$1"
-  local url="https://github.com/${repo}/releases/latest/download/pa2pa-${TARGET}.tar.gz"
+  local archive="pa2pa-${TARGET}.tar.gz"
+  local base_url="https://github.com/${repo}/releases/latest/download"
+  local url="${base_url}/${archive}"
+  local sums_url="${base_url}/SHA256SUMS.txt"
   local tmp
   tmp="$(mktemp -d)"
   echo "==> Downloading prebuilt pa2pa (${TARGET}) from ${url}..."
-  if curl -fsSL "$url" -o "$tmp/pa2pa.tar.gz"; then
-    tar -xzf "$tmp/pa2pa.tar.gz" -C "$tmp"
+  if curl -fsSL "$url" -o "$tmp/$archive"; then
+    if curl -fsSL "$sums_url" -o "$tmp/SHA256SUMS.txt"; then
+      local expected actual
+      expected="$(grep " ${archive}\$" "$tmp/SHA256SUMS.txt" | awk '{print $1}' | head -n 1 || true)"
+      if [ -n "$expected" ]; then
+        if command -v sha256sum >/dev/null 2>&1; then
+          actual="$(sha256sum "$tmp/$archive" | awk '{print $1}')"
+        elif command -v shasum >/dev/null 2>&1; then
+          actual="$(shasum -a 256 "$tmp/$archive" | awk '{print $1}')"
+        else
+          actual=""
+        fi
+        if [ -n "$actual" ] && [ "$expected" != "$actual" ]; then
+          echo "ERROR: SHA256 checksum mismatch for ${archive}!" >&2
+          echo "  Expected: $expected" >&2
+          echo "  Actual  : $actual" >&2
+          rm -rf "$tmp"
+          exit 1
+        fi
+        echo "==> Verified SHA256 checksum (${actual:0:12}...)"
+      fi
+    fi
+    tar -xzf "$tmp/$archive" -C "$tmp"
     install -m 755 "$tmp/pa2pa" "$INSTALL_DIR/pa2pa"
     if [ -f "$tmp/pa2pa-pill" ]; then
       install -m 755 "$tmp/pa2pa-pill" "$INSTALL_DIR/pa2pa-pill"

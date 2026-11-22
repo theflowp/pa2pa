@@ -255,6 +255,17 @@ fn xml_escape(s: &str) -> String {
 }
 
 #[cfg(target_os = "linux")]
+fn systemd_quote(s: &str) -> Result<String> {
+    if s.chars().any(|c| c.is_control()) {
+        anyhow::bail!("Path contains unsafe control characters");
+    }
+    Ok(format!(
+        "\"{}\"",
+        s.replace('\\', "\\\\").replace('"', "\\\"")
+    ))
+}
+
+#[cfg(target_os = "linux")]
 fn install_linux_systemd(
     paths: &Pa2paPaths,
     pa2pa_exe: &PathBuf,
@@ -268,12 +279,12 @@ fn install_linux_systemd(
         .join("user");
     fs::create_dir_all(&unit_dir)?;
 
+    let exe_q = systemd_quote(&pa2pa_exe.display().to_string())?;
+    let home_q = systemd_quote(&paths.home.display().to_string())?;
     let daemon_unit = format!(
         "[Unit]\nDescription=pa2pa E2E Agent Daemon\nAfter=network-online.target\n\n\
-         [Service]\nExecStart={} --home {} daemon\nRestart=on-failure\nRestartSec=3\n\n\
-         [Install]\nWantedBy=default.target\n",
-        pa2pa_exe.display(),
-        paths.home.display()
+         [Service]\nExecStart={exe_q} --home {home_q} daemon\nRestart=on-failure\nRestartSec=3\n\n\
+         [Install]\nWantedBy=default.target\n"
     );
     let daemon_path = unit_dir.join("pa2pa-daemon.service");
     fs::write(&daemon_path, daemon_unit)?;
@@ -287,12 +298,12 @@ fn install_linux_systemd(
 
     if with_pill {
         if let Some(pill) = pill_exe {
+            let pill_q = systemd_quote(&pill.display().to_string())?;
+            let url_q = systemd_quote(ui_url)?;
             let pill_unit = format!(
                 "[Unit]\nDescription=pa2pa System Tray & Floating Pill\nAfter=pa2pa-daemon.service graphical-session.target\n\n\
-                 [Service]\nExecStart={} --url {}\nRestart=on-failure\nRestartSec=3\n\n\
-                 [Install]\nWantedBy=graphical-session.target\n",
-                pill.display(),
-                ui_url
+                 [Service]\nExecStart={pill_q} --url {url_q}\nRestart=on-failure\nRestartSec=3\n\n\
+                 [Install]\nWantedBy=graphical-session.target\n"
             );
             let pill_path = unit_dir.join("pa2pa-pill.service");
             fs::write(&pill_path, pill_unit)?;
@@ -336,13 +347,17 @@ fn install_windows_startup(
     let startup = windows_startup_dir()
         .ok_or_else(|| anyhow!("Could not locate Windows Startup folder (%APPDATA%)"))?;
     fs::create_dir_all(&startup)?;
+    let exe_str = pa2pa_exe.display().to_string();
+    let home_str = paths.home.display().to_string();
+    if exe_str.chars().any(|c| c.is_control() || c == '"')
+        || home_str.chars().any(|c| c.is_control() || c == '"')
+    {
+        anyhow::bail!("Executable or home path contains unsafe characters for Windows Startup VBS");
+    }
     let pill_flag = if with_pill { " --pill" } else { "" };
     let vbs = format!(
         "Set WshShell = CreateObject(\"WScript.Shell\")\r\n\
-         WshShell.Run \"\"\"{}\"\" --home \"\"{}\"\" daemon{}\", 0, False\r\n",
-        pa2pa_exe.display(),
-        paths.home.display(),
-        pill_flag
+         WshShell.Run \"\"\"{exe_str}\"\" --home \"\"{home_str}\"\" daemon{pill_flag}\", 0, False\r\n"
     );
     let vbs_path = startup.join("pa2pa.vbs");
     fs::write(&vbs_path, vbs)?;

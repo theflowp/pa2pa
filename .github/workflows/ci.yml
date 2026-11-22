@@ -24,3 +24,13 @@ jobs:
         run: cargo test --workspace
       - name: Build pa2pa and pa2pa-pill
         run: cargo build --bin pa2pa --bin pa2pa-pill
+
+  security-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ignore-advisories: ""
+
