@@ -1,19 +1,20 @@
 # pa2pa installer for Windows (PowerShell)
 # Usage:
+#   irm https://raw.githubusercontent.com/theflowp/pa2pa/main/scripts/install.ps1 | iex
+# Or from a local git clone:
 #   powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
-# Or with a GitHub repo release:
-#   $env:PA2PA_REPO="<owner>/pa2pa"; irm https://raw.githubusercontent.com/<owner>/pa2pa/main/scripts/install.ps1 | iex
 
 $ErrorActionPreference = "Stop"
 
 $InstallDir = if ($env:PA2PA_INSTALL_DIR) { $env:PA2PA_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "pa2pa\bin" }
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
+$Repo = if ($env:PA2PA_REPO) { $env:PA2PA_REPO } else { "theflowp/pa2pa" }
 $Target = "x86_64-pc-windows-msvc"
 $Installed = $false
 
-if ($env:PA2PA_REPO) {
-    $Url = "https://github.com/$($env:PA2PA_REPO)/releases/latest/download/pa2pa-$Target.zip"
+if ($Repo) {
+    $Url = "https://github.com/$Repo/releases/latest/download/pa2pa-$Target.zip"
     $TmpZip = Join-Path $env:TEMP "pa2pa-$Target.zip"
     $TmpDir = Join-Path $env:TEMP "pa2pa-extract-$(Get-Random)"
     try {
@@ -40,11 +41,22 @@ if (-not $Installed) {
         $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
     }
 
-    $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+    if ($PSScriptRoot -and (Test-Path (Join-Path (Join-Path $PSScriptRoot "..") "Cargo.toml"))) {
+        $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+        $CleanupSrc = $false
+    } else {
+        $RepoRoot = Join-Path $env:TEMP "pa2pa-src-$(Get-Random)"
+        Write-Host "==> Cloning https://github.com/$Repo.git..."
+        git clone --depth 1 "https://github.com/$Repo.git" $RepoRoot
+        $CleanupSrc = $true
+    }
     Write-Host "==> Building pa2pa.exe and pa2pa-pill.exe from source..."
     cargo build --manifest-path (Join-Path $RepoRoot "Cargo.toml") --release --bin pa2pa --bin pa2pa-pill
     Copy-Item (Join-Path $RepoRoot "target\release\pa2pa.exe") (Join-Path $InstallDir "pa2pa.exe") -Force
     Copy-Item (Join-Path $RepoRoot "target\release\pa2pa-pill.exe") (Join-Path $InstallDir "pa2pa-pill.exe") -Force
+    if ($CleanupSrc) {
+        Remove-Item $RepoRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")

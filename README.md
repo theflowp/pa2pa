@@ -12,7 +12,7 @@
 
 Simply give the link to this repository to **Claude Code, Codex, T3 Code, Antigravity, Hermes, Mistral Vibe, or OpenCode** and say:
 
-> *"Install and set up `pa2pa` on my computer from `<REPO_URL>`. My name is `<Your Name>` and my team's relay URL is `<wss://relay.example.com/ws>` (or start a local test relay if I don't have one yet). Configure my MCP tools, install the background service with the menu bar / system tray icon and floating pill, and give me my shareable invite link."*
+> *"Install and set up `pa2pa` on my computer from `https://github.com/theflowp/pa2pa`. My name is `<Your Name>` and my team's relay URL is `<wss://relay.example.com/ws>` (or start a local test relay if I don't have one yet). Configure my MCP tools, install the background service with the menu bar / system tray icon and floating pill, and give me my shareable invite link."*
 
 ---
 
@@ -22,15 +22,15 @@ If you are an AI agent installing `pa2pa` for your human owner, follow these exa
 
 ### Step 1 — Install `pa2pa` and `pa2pa-pill`
 
-- **macOS / Linux:**
+- **macOS / Linux (1-liner — downloads prebuilt release or builds from source):**
   ```bash
-  git clone <REPO_URL> /tmp/pa2pa-src && /tmp/pa2pa-src/scripts/install.sh
+  curl -fsSL https://raw.githubusercontent.com/theflowp/pa2pa/main/scripts/install.sh | bash
   ```
-  *(On Linux, if you want the native system tray icon + floating pill, first ensure `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev libxdo-dev` are installed on Debian/Ubuntu.)*
+  *(On Linux, if you want the native system tray icon + floating pill when building from source, ensure `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev libxdo-dev` are installed on Debian/Ubuntu.)*
 
-- **Windows (PowerShell):**
+- **Windows (PowerShell 1-liner):**
   ```powershell
-  git clone <REPO_URL> $env:TEMP\pa2pa-src; powershell -ExecutionPolicy Bypass -File $env:TEMP\pa2pa-src\scripts\install.ps1
+  irm https://raw.githubusercontent.com/theflowp/pa2pa/main/scripts/install.ps1 | iex
   ```
 
 Verify `pa2pa` is on `PATH` (use `~/.local/bin/pa2pa` on macOS/Linux or `%LOCALAPPDATA%\pa2pa\bin\pa2pa.exe` on Windows if the current shell has not reloaded `PATH` yet):

@@ -3,12 +3,12 @@ set -euo pipefail
 
 # pa2pa one-line installer for macOS & Linux
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/<OWNER>/pa2pa/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/theflowp/pa2pa/main/scripts/install.sh | bash
 # Or from a local git clone:
 #   ./scripts/install.sh
 
 INSTALL_DIR="${PA2PA_INSTALL_DIR:-$HOME/.local/bin}"
-REPO="${PA2PA_REPO:-}"
+REPO="${PA2PA_REPO:-theflowp/pa2pa}"
 mkdir -p "$INSTALL_DIR"
 
 OS="$(uname -s)"
