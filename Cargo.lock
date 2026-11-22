@@ -3668,7 +3668,7 @@ dependencies = [
 
 [[package]]
 name = "pa2pa-cli"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3691,7 +3691,7 @@ dependencies = [
 
 [[package]]
 name = "pa2pa-core"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3716,7 +3716,7 @@ dependencies = [
 
 [[package]]
 name = "pa2pa-crypto"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "base64 0.22.1",
  "chacha20poly1305",
@@ -3732,7 +3732,7 @@ dependencies = [
 
 [[package]]
 name = "pa2pa-daemon"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "axum",
@@ -3755,7 +3755,7 @@ dependencies = [
 
 [[package]]
 name = "pa2pa-mcp"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3772,7 +3772,7 @@ dependencies = [
 
 [[package]]
 name = "pa2pa-pill"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -3790,7 +3790,7 @@ dependencies = [
 
 [[package]]
 name = "pa2pa-proto"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -3803,7 +3803,7 @@ dependencies = [
 
 [[package]]
 name = "pa2pa-relay"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "axum",

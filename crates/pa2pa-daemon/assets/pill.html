@@ -6,7 +6,12 @@
   <!--PA2PA_TOKEN_META-->
   <title>pa2pa Pill</title>
   <style>
-    * { box-sizing: border-box; user-select: none; }
+    * {
+      box-sizing: border-box;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
     html, body {
       margin: 0;
       padding: 0;
@@ -15,7 +20,8 @@
       background: transparent !important;
       overflow: hidden;
       font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", sans-serif;
-      color: #edf2ff;
+      color: #f1f5ff;
+      -webkit-font-smoothing: antialiased;
     }
     .shell {
       display: flex;
@@ -27,16 +33,73 @@
       padding: 2px;
       background: transparent !important;
     }
+
+    /* Liquid Glass surface shared between card & pill (pure GPU gradients, zero resize flicker) */
+    .glass {
+      position: relative;
+      isolation: isolate;
+      overflow: hidden;
+      background:
+        radial-gradient(120% 90% at 18% 0%, rgba(155, 185, 255, 0.16) 0%, rgba(155, 185, 255, 0) 58%),
+        linear-gradient(
+          160deg,
+          rgba(34, 42, 64, 0.80) 0%,
+          rgba(16, 20, 34, 0.86) 52%,
+          rgba(11, 14, 24, 0.92) 100%
+        );
+      border: 1px solid rgba(255, 255, 255, 0.20);
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.34),
+        inset 0 -1px 0 rgba(255, 255, 255, 0.07),
+        inset 0 0 18px rgba(255, 255, 255, 0.03);
+    }
+    .glass::before {
+      content: "";
+      position: absolute;
+      inset: 0 10% auto 10%;
+      height: 1px;
+      background: linear-gradient(
+        90deg,
+        rgba(255, 255, 255, 0) 0%,
+        rgba(255, 255, 255, 0.62) 50%,
+        rgba(255, 255, 255, 0) 100%
+      );
+      pointer-events: none;
+      z-index: 2;
+    }
+
+    .card-wrap {
+      width: 100%;
+      display: none;
+      padding-bottom: 8px;
+      transform-origin: bottom right;
+      will-change: transform, opacity;
+      opacity: 0;
+      transform: translate3d(0, 14px, 0) scale(0.93);
+      transition:
+        opacity 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+        transform 0.38s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .card-wrap.mounted {
+      display: block;
+    }
+    .card-wrap.open {
+      opacity: 1;
+      transform: translate3d(0, 0, 0) scale(1);
+    }
+    .card-wrap.closing {
+      opacity: 0;
+      transform: translate3d(0, 12px, 0) scale(0.94);
+      transition:
+        opacity 0.20s cubic-bezier(0.4, 0, 0.2, 1),
+        transform 0.24s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
     .card {
       width: 100%;
-      background: rgba(15, 18, 28, 0.96);
-      border: 1px solid rgba(255, 255, 255, 0.14);
-      border-radius: 18px;
+      border-radius: 20px;
       padding: 13px 14px;
-      margin-bottom: 8px;
-      display: none;
     }
-    .card.open { display: block; }
     .card-head {
       display: flex;
       align-items: center;
@@ -51,46 +114,44 @@
       gap: 8px;
       font-weight: 700;
       font-size: 13px;
+      letter-spacing: -0.01em;
     }
     .contacts-meta {
       font-weight: 500;
       font-size: 11.5px;
-      color: #8c98b3;
-    }
-    .min-btn {
-      width: 24px;
-      height: 24px;
-      font-size: 15px;
-      line-height: 1;
+      color: rgba(203, 213, 238, 0.72);
     }
     .tag {
-      background: rgba(251, 191, 36, 0.18);
+      background: rgba(251, 191, 36, 0.20);
       color: #fbbf24;
       padding: 2px 7px;
       border-radius: 999px;
       font-size: 10px;
       font-weight: 700;
       text-transform: uppercase;
+      border: 1px solid rgba(251, 191, 36, 0.25);
     }
     .reason {
       font-size: 11.5px;
-      color: #9ba8c4;
+      color: rgba(203, 213, 238, 0.78);
       margin-bottom: 8px;
-      line-height: 1.4;
+      line-height: 1.42;
     }
     .reason:last-child {
       margin-bottom: 0;
     }
     .msg-box {
-      background: rgba(255, 255, 255, 0.05);
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.08);
       border-left: 2.5px solid #fbbf24;
-      border-radius: 8px;
+      border-radius: 10px;
       padding: 8px 10px;
       font-size: 12.5px;
       line-height: 1.4;
       max-height: 92px;
       overflow-y: auto;
       user-select: text;
+      -webkit-user-select: text;
       white-space: pre-wrap;
       word-break: break-word;
       margin-bottom: 9px;
@@ -99,42 +160,67 @@
       width: 100%;
       height: 52px;
       resize: none;
-      background: rgba(255, 255, 255, 0.06);
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.07);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 11px;
       color: #f3f6ff;
       padding: 7px 9px;
       font-size: 12px;
       font-family: inherit;
       user-select: text;
+      -webkit-user-select: text;
       margin-bottom: 8px;
       outline: none;
+      transition: border-color 0.18s ease, background 0.18s ease;
     }
-    textarea:focus { border-color: #6c8cff; }
+    textarea:focus {
+      border-color: rgba(129, 157, 255, 0.8);
+      background: rgba(255, 255, 255, 0.10);
+    }
     .actions {
       display: flex;
       gap: 6px;
       flex-wrap: wrap;
     }
+
     button {
+      appearance: none;
+      -webkit-appearance: none;
       border: none;
-      border-radius: 9px;
+      outline: none;
+      border-radius: 10px;
       padding: 6px 10px;
       font-size: 11.5px;
       font-weight: 600;
       cursor: pointer;
-      color: #edf2ff;
-      background: rgba(255, 255, 255, 0.09);
-      transition: transform 0.08s ease, background 0.12s ease;
+      color: #f1f5ff;
+      background: rgba(255, 255, 255, 0.10);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
+      transform: translateZ(0);
+      backface-visibility: hidden;
+      -webkit-backface-visibility: hidden;
+      transition:
+        transform 0.14s cubic-bezier(0.22, 1, 0.36, 1),
+        background-color 0.18s ease,
+        box-shadow 0.18s ease;
     }
-    button:hover { background: rgba(255, 255, 255, 0.16); }
-    button:active { transform: scale(0.97); }
-    .btn-good { background: rgba(52, 211, 153, 0.22); color: #34d399; }
+    button:hover {
+      background: rgba(255, 255, 255, 0.18);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28);
+    }
+    button:active {
+      transform: scale(0.93) translateZ(0);
+      background: rgba(255, 255, 255, 0.22);
+    }
+    button:focus, button:focus-visible {
+      outline: none;
+    }
+    .btn-good { background: rgba(52, 211, 153, 0.22); color: #5eead4; }
     .btn-good:hover { background: rgba(52, 211, 153, 0.34); }
-    .btn-primary { background: #6c8cff; color: #090d16; }
-    .btn-primary:hover { background: #819dff; }
-    .btn-danger { background: rgba(248, 113, 113, 0.2); color: #f87171; }
-    .btn-danger:hover { background: rgba(248, 113, 113, 0.32); }
+    .btn-primary { background: rgba(108, 140, 255, 0.90); color: #090d16; }
+    .btn-primary:hover { background: rgba(129, 157, 255, 0.96); }
+    .btn-danger { background: rgba(248, 113, 113, 0.22); color: #fca5a5; }
+    .btn-danger:hover { background: rgba(248, 113, 113, 0.34); }
 
     .pill {
       display: flex;
@@ -144,14 +230,18 @@
       height: 44px;
       min-width: 248px;
       max-width: 100%;
-      padding: 0 10px 0 14px;
+      padding: 0 8px 0 14px;
       border-radius: 999px;
-      background: rgba(15, 18, 28, 0.96);
-      border: 1px solid rgba(255, 255, 255, 0.16);
+      transform: translateZ(0);
+      backface-visibility: hidden;
+      -webkit-backface-visibility: hidden;
+      transition: border-color 0.25s ease, box-shadow 0.25s ease;
     }
     .pill.alert {
-      border-color: rgba(251, 191, 36, 0.75);
-      box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.35);
+      border-color: rgba(251, 191, 36, 0.78);
+      box-shadow:
+        inset 0 1px 0 rgba(255, 232, 163, 0.40),
+        inset 0 0 0 1px rgba(251, 191, 36, 0.35);
     }
     .drag-zone {
       display: flex;
@@ -160,6 +250,7 @@
       flex: 1;
       cursor: grab;
       height: 100%;
+      min-width: 0;
     }
     .drag-zone:active { cursor: grabbing; }
     .dot {
@@ -168,22 +259,29 @@
       border-radius: 50%;
       background: #64748b;
       flex-shrink: 0;
+      transition: background-color 0.25s ease, box-shadow 0.25s ease;
     }
-    .dot.ok { background: #34d399; box-shadow: 0 0 8px #34d399; }
-    .dot.warn { background: #fbbf24; box-shadow: 0 0 10px #fbbf24; animation: pulse 1.5s infinite; }
+    .dot.ok { background: #34d399; box-shadow: 0 0 8px rgba(52, 211, 153, 0.85); }
+    .dot.warn { background: #fbbf24; box-shadow: 0 0 10px rgba(251, 191, 36, 0.9); animation: pulse 1.6s ease-in-out infinite; }
     .dot.err { background: #f87171; }
     @keyframes pulse {
       0%, 100% { transform: scale(1); opacity: 1; }
-      50% { transform: scale(1.25); opacity: 0.7; }
+      50% { transform: scale(1.22); opacity: 0.72; }
     }
     .pill-title {
       font-size: 12.5px;
       font-weight: 600;
+      letter-spacing: -0.01em;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    .pill-btns { display: flex; align-items: center; gap: 4px; }
+    .pill-btns {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex-shrink: 0;
+    }
     .icon-btn {
       width: 28px;
       height: 28px;
@@ -191,30 +289,73 @@
       padding: 0;
       display: grid;
       place-items: center;
-      font-size: 13px;
-      background: rgba(255, 255, 255, 0.08);
+      background: rgba(255, 255, 255, 0.09);
+      border: 1px solid rgba(255, 255, 255, 0.10);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+      color: rgba(241, 245, 255, 0.92);
+    }
+    .icon-btn:hover {
+      background: rgba(255, 255, 255, 0.17);
+      border-color: rgba(255, 255, 255, 0.20);
+    }
+    .icon-btn svg {
+      width: 13px;
+      height: 13px;
+      display: block;
+      pointer-events: none;
+    }
+    .min-btn {
+      width: 24px;
+      height: 24px;
+    }
+    .min-btn svg {
+      width: 12px;
+      height: 12px;
+    }
+    #chevron-icon {
+      transition: transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+      transform: rotate(0deg);
+    }
+    #toggle-btn.is-open #chevron-icon {
+      transform: rotate(180deg);
     }
   </style>
 </head>
 <body>
   <div class="shell">
-    <div id="card" class="card"></div>
+    <div id="card-wrap" class="card-wrap">
+      <div id="card" class="card glass"></div>
+    </div>
 
-    <div id="pill" class="pill">
+    <div id="pill" class="pill glass">
       <div class="drag-zone" id="drag-zone" title="Drag pill · Double-click to toggle">
         <span id="dot" class="dot"></span>
         <span id="pill-text" class="pill-title">pa2pa · connecting…</span>
       </div>
       <div class="pill-btns">
-        <button class="icon-btn" id="toggle-btn" title="Expand / Collapse" onclick="toggleExpand()">▲</button>
-        <button class="icon-btn" title="Open Web Dashboard" onclick="openDashboard()">↗</button>
+        <button class="icon-btn" id="toggle-btn" type="button" title="Expand / Collapse" data-action="toggle">
+          <svg id="chevron-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 10l4-4 4 4"/>
+          </svg>
+        </button>
+        <button class="icon-btn" type="button" title="Open Web Dashboard" data-action="open-dashboard">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5 11L11 5M6.5 5H11v4.5"/>
+          </svg>
+        </button>
       </div>
     </div>
   </div>
 
   <script>
     const API_TOKEN = document.querySelector('meta[name="pa2pa-token"]')?.content || '';
+    const MINUS_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 8h8"/></svg>';
+    const PREV_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 4L6 8l4 4"/></svg>';
+    const NEXT_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg>';
+
     let expanded = false;
+    let animGen = 0;
+    let collapseTimer = null;
     let statusData = null;
     let pendingApprovals = [];
     let activeIdx = 0;
@@ -235,25 +376,57 @@
       return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     }
 
-    function syncWindowHeight() {
-      if (!expanded) {
-        postIpc({ type: 'resize', expanded: false });
-        return;
-      }
-      requestAnimationFrame(() => {
-        const card = document.getElementById('card');
-        const pill = document.getElementById('pill');
-        const totalH = Math.ceil(card.offsetHeight + pill.offsetHeight + 14);
-        postIpc({ type: 'resize', expanded: true, height: totalH });
-      });
+    function measureExpandedHeight() {
+      const wrap = document.getElementById('card-wrap');
+      const pill = document.getElementById('pill');
+      return Math.ceil(wrap.offsetHeight + pill.offsetHeight + 8);
     }
 
     function setExpanded(next) {
+      if (next === expanded) return;
       expanded = next;
-      document.getElementById('card').classList.toggle('open', expanded);
-      document.getElementById('toggle-btn').textContent = expanded ? '▼' : '▲';
-      renderCard();
-      syncWindowHeight();
+      animGen += 1;
+      const gen = animGen;
+      if (collapseTimer) {
+        clearTimeout(collapseTimer);
+        collapseTimer = null;
+      }
+
+      const wrap = document.getElementById('card-wrap');
+      const toggleBtn = document.getElementById('toggle-btn');
+      toggleBtn.classList.toggle('is-open', expanded);
+
+      if (expanded) {
+        renderCardContent();
+        wrap.classList.remove('closing', 'open');
+        wrap.classList.add('mounted');
+
+        // Expand NSWindow atomically first (at 396px width), measure exact height on next frame
+        // if needed while still invisible, then spring the Liquid Glass card into view.
+        const initialH = measureExpandedHeight();
+        postIpc({ type: 'resize', expanded: true, height: initialH });
+
+        requestAnimationFrame(() => {
+          if (gen !== animGen || !expanded) return;
+          const settledH = measureExpandedHeight();
+          if (Math.abs(settledH - initialH) > 2) {
+            postIpc({ type: 'resize', expanded: true, height: settledH });
+          }
+          requestAnimationFrame(() => {
+            if (gen !== animGen || !expanded) return;
+            wrap.classList.add('open');
+          });
+        });
+      } else {
+        // Animate the card smoothly down into the pill first, then shrink NSWindow cleanly.
+        wrap.classList.remove('open');
+        wrap.classList.add('closing');
+        collapseTimer = setTimeout(() => {
+          if (gen !== animGen || expanded) return;
+          wrap.classList.remove('mounted', 'closing');
+          postIpc({ type: 'resize', expanded: false });
+        }, 250);
+      }
     }
 
     function toggleExpand() {
@@ -293,7 +466,13 @@
         if (activeIdx >= pendingApprovals.length) activeIdx = 0;
 
         renderPill();
-        renderCard();
+        if (expanded) {
+          renderCardContent();
+          requestAnimationFrame(() => {
+            if (!expanded) return;
+            postIpc({ type: 'resize', expanded: true, height: measureExpandedHeight() });
+          });
+        }
       } catch (e) {
         document.getElementById('dot').className = 'dot err';
         document.getElementById('pill-text').textContent = 'pa2pa · daemon offline';
@@ -343,10 +522,8 @@
       });
     }
 
-    function renderCard() {
+    function renderCardContent() {
       const card = document.getElementById('card');
-      if (!expanded) return;
-
       if (pendingApprovals.length === 0) {
         const n = Number(statusData?.contacts_count || 0);
         const contactsLabel = `${n} contact${n > 1 ? 's' : ''}`;
@@ -356,11 +533,10 @@
               @${esc(statusData?.name || 'pa2pa')}
               <span class="contacts-meta">${contactsLabel}</span>
             </span>
-            <button class="icon-btn min-btn" data-action="minimize" title="Minimize">−</button>
+            <button class="icon-btn min-btn" type="button" data-action="minimize" title="Minimize">${MINUS_SVG}</button>
           </div>
           <div class="reason">No pending approvals. Your personal agent is standing by (${esc(statusData?.default_runner || 'claude')}).</div>
         `;
-        syncWindowHeight();
         return;
       }
 
@@ -369,26 +545,29 @@
         <div class="card-head">
           <span class="peer-badge">@${esc(ap.peer_alias)} <span class="tag">Approval ${activeIdx + 1}/${pendingApprovals.length}</span></span>
           <div style="display:flex;gap:4px">
-            ${pendingApprovals.length > 1 ? `<button class="icon-btn min-btn" data-action="cycle" data-delta="-1">‹</button><button class="icon-btn min-btn" data-action="cycle" data-delta="1">›</button>` : ''}
-            <button class="icon-btn min-btn" data-action="minimize" title="Minimize">−</button>
+            ${pendingApprovals.length > 1 ? `<button class="icon-btn min-btn" type="button" data-action="cycle" data-delta="-1">${PREV_SVG}</button><button class="icon-btn min-btn" type="button" data-action="cycle" data-delta="1">${NEXT_SVG}</button>` : ''}
+            <button class="icon-btn min-btn" type="button" data-action="minimize" title="Minimize">${MINUS_SVG}</button>
           </div>
         </div>
         <div class="reason">${esc(ap.reason)}</div>
         <div class="msg-box">${esc(ap.peer_message)}</div>
         <textarea id="pill-reply" placeholder="Optional custom reply...">${esc(ap.proposed_reply || '')}</textarea>
         <div class="actions">
-          <button class="btn-good" data-action="decide" data-id="${esc(ap.id)}" data-mode="run_agent">Run Agent</button>
-          <button class="btn-primary" data-action="decide" data-id="${esc(ap.id)}" data-mode="reply">Send Reply</button>
-          <button class="btn-danger" data-action="deny" data-id="${esc(ap.id)}">Deny</button>
-          <button data-action="open-dashboard">Details</button>
+          <button class="btn-good" type="button" data-action="decide" data-id="${esc(ap.id)}" data-mode="run_agent">Run Agent</button>
+          <button class="btn-primary" type="button" data-action="decide" data-id="${esc(ap.id)}" data-mode="reply">Send Reply</button>
+          <button class="btn-danger" type="button" data-action="deny" data-id="${esc(ap.id)}">Deny</button>
+          <button type="button" data-action="open-dashboard">Details</button>
         </div>
       `;
-      syncWindowHeight();
     }
 
     function cycleApproval(delta) {
       activeIdx = (activeIdx + delta + pendingApprovals.length) % pendingApprovals.length;
-      renderCard();
+      renderCardContent();
+      requestAnimationFrame(() => {
+        if (!expanded) return;
+        postIpc({ type: 'resize', expanded: true, height: measureExpandedHeight() });
+      });
     }
 
     async function decide(id, mode) {
@@ -425,7 +604,8 @@
       const el = e.target.closest('[data-action]');
       if (!el) return;
       const action = el.dataset.action;
-      if (action === 'decide') decide(el.dataset.id, el.dataset.mode);
+      if (action === 'toggle') toggleExpand();
+      else if (action === 'decide') decide(el.dataset.id, el.dataset.mode);
       else if (action === 'deny') deny(el.dataset.id);
       else if (action === 'cycle') cycleApproval(Number(el.dataset.delta || 0));
       else if (action === 'open-dashboard') openDashboard();

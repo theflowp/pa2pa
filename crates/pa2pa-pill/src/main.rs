@@ -126,6 +126,74 @@ fn current_work_area(window: &Window) -> Option<WorkArea> {
 }
 
 #[cfg(target_os = "macos")]
+fn macos_primary_screen_height() -> Option<f64> {
+    use objc2_app_kit::NSScreen;
+    use objc2_foundation::MainThreadMarker;
+
+    let mtm = MainThreadMarker::new()?;
+    let screens = NSScreen::screens(mtm);
+    if screens.is_empty() {
+        return None;
+    }
+    Some(screens.objectAtIndex(0).frame().size.height)
+}
+
+/// Read current window top-left logical position & size (uses exact AppKit `NSRect` on macOS
+/// to avoid physical-pixel rounding jitter during atomic bottom-right resizing).
+fn get_window_rect_logical(window: &Window, fallback_w: f64, fallback_h: f64) -> (f64, f64, f64, f64) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::msg_send;
+        use objc2::runtime::AnyObject;
+        use objc2_foundation::NSRect;
+        use tao::platform::macos::WindowExtMacOS;
+
+        if let Some(primary_h) = macos_primary_screen_height() {
+            let ns_win = window.ns_window() as *mut AnyObject;
+            if !ns_win.is_null() {
+                let rect: NSRect = unsafe { msg_send![ns_win, frame] };
+                let top_y = primary_h - (rect.origin.y + rect.size.height);
+                return (rect.origin.x, top_y, rect.size.width, rect.size.height);
+            }
+        }
+    }
+
+    let scale = window.scale_factor();
+    let (x, y) = window
+        .outer_position()
+        .map(|p| (p.x as f64 / scale, p.y as f64 / scale))
+        .unwrap_or((100.0, 100.0));
+    (x, y, fallback_w, fallback_h)
+}
+
+/// Atomically set both size and top-left logical position of the window in a single AppKit
+/// transaction on macOS so the bottom-right pill never jumps or flickers during expand/collapse.
+fn set_window_rect_atomic(window: &Window, x: f64, y: f64, w: f64, h: f64) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::msg_send;
+        use objc2::runtime::{AnyObject, Bool};
+        use objc2_foundation::{NSPoint, NSRect, NSSize};
+        use tao::platform::macos::WindowExtMacOS;
+
+        if let Some(primary_h) = macos_primary_screen_height() {
+            let ns_win = window.ns_window() as *mut AnyObject;
+            if !ns_win.is_null() {
+                let appkit_y = primary_h - (y + h);
+                let rect = NSRect::new(NSPoint::new(x, appkit_y), NSSize::new(w, h));
+                unsafe {
+                    let _: () = msg_send![ns_win, setFrame: rect, display: Bool::YES];
+                }
+                return;
+            }
+        }
+    }
+
+    window.set_inner_size(LogicalSize::new(w, h));
+    window.set_outer_position(LogicalPosition::new(x, y));
+}
+
+#[cfg(target_os = "macos")]
 fn enforce_macos_true_transparency(window: &Window, webview: &wry::WebView) {
     use objc2::runtime::{AnyObject, Bool};
     use objc2::{msg_send, sel};
@@ -534,27 +602,23 @@ fn main() -> anyhow::Result<()> {
                         return;
                     }
 
-                    let scale = window.scale_factor();
-                    let cur_pos = window
-                        .outer_position()
-                        .map(|p| (p.x as f64 / scale, p.y as f64 / scale))
-                        .unwrap_or((100.0, 100.0));
+                    let (cur_x, cur_y, actual_w, actual_h) =
+                        get_window_rect_logical(&window, cur_w, cur_h);
 
                     let (new_x, new_y) = if let Some(area) = current_work_area(&window) {
                         area.clamp_bottom_right_resize(
-                            cur_pos.0, cur_pos.1, cur_w, cur_h, new_w, new_h,
+                            cur_x, cur_y, actual_w, actual_h, new_w, new_h,
                         )
                     } else {
-                        let right_x = cur_pos.0 + cur_w;
-                        let bottom_y = cur_pos.1 + cur_h;
+                        let right_x = cur_x + actual_w;
+                        let bottom_y = cur_y + actual_h;
                         (
                             (right_x - new_w).max(CLAMP_MARGIN),
                             (bottom_y - new_h).max(28.0),
                         )
                     };
 
-                    window.set_inner_size(LogicalSize::new(new_w, new_h));
-                    window.set_outer_position(LogicalPosition::new(new_x, new_y));
+                    set_window_rect_atomic(&window, new_x, new_y, new_w, new_h);
                     is_expanded = expanded;
                     cur_w = new_w;
                     cur_h = new_h;
