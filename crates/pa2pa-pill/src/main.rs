@@ -5,7 +5,7 @@ use serde::Deserialize;
 use tao::dpi::{LogicalPosition, LogicalSize};
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
-use tao::window::WindowBuilder;
+use tao::window::{Window, WindowBuilder};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIconBuilder};
 use wry::WebViewBuilder;
@@ -14,6 +14,123 @@ const COMPACT_W: f64 = 300.0;
 const COMPACT_H: f64 = 58.0;
 const EXPANDED_W: f64 = 412.0;
 const EXPANDED_H: f64 = 392.0;
+const EDGE_MARGIN: f64 = 18.0;
+const CLAMP_MARGIN: f64 = 8.0;
+
+/// Usable screen work area in logical top-left coordinates (excludes menu bar & Dock/taskbar).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct WorkArea {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+impl WorkArea {
+    fn bottom_right_position(&self, win_w: f64, win_h: f64) -> (f64, f64) {
+        let x = (self.x + self.width - win_w - EDGE_MARGIN).max(self.x + CLAMP_MARGIN);
+        let y = (self.y + self.height - win_h - EDGE_MARGIN).max(self.y + CLAMP_MARGIN);
+        (x, y)
+    }
+
+    fn clamp_bottom_right_resize(
+        &self,
+        cur_x: f64,
+        cur_y: f64,
+        old_w: f64,
+        old_h: f64,
+        new_w: f64,
+        new_h: f64,
+    ) -> (f64, f64) {
+        let right_x = cur_x + old_w;
+        let bottom_y = cur_y + old_h;
+
+        let min_x = self.x + CLAMP_MARGIN;
+        let max_x = (self.x + self.width - new_w - CLAMP_MARGIN).max(min_x);
+        let min_y = self.y + CLAMP_MARGIN;
+        let max_y = (self.y + self.height - new_h - CLAMP_MARGIN).max(min_y);
+
+        let new_x = (right_x - new_w).clamp(min_x, max_x);
+        let new_y = (bottom_y - new_h).clamp(min_y, max_y);
+        (new_x, new_y)
+    }
+}
+
+/// Convert AppKit's bottom-left `visibleFrame` into top-left logical coordinates (matching `tao`).
+#[cfg(any(target_os = "macos", test))]
+fn appkit_visible_frame_to_work_area(
+    primary_screen_height: f64,
+    vis_x: f64,
+    vis_y: f64,
+    vis_w: f64,
+    vis_h: f64,
+) -> WorkArea {
+    WorkArea {
+        x: vis_x,
+        y: primary_screen_height - (vis_y + vis_h),
+        width: vis_w,
+        height: vis_h,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_work_area() -> Option<WorkArea> {
+    use objc2_app_kit::NSScreen;
+    use objc2_foundation::MainThreadMarker;
+
+    let mtm = MainThreadMarker::new()?;
+    let screens = NSScreen::screens(mtm);
+    if screens.is_empty() {
+        return None;
+    }
+    // In AppKit, screens[0] is always the primary display (defines the global Y=0 bottom origin).
+    let primary = screens.objectAtIndex(0);
+    let primary_height = primary.frame().size.height;
+    let target = NSScreen::mainScreen(mtm).unwrap_or(primary);
+    let vis = target.visibleFrame();
+    Some(appkit_visible_frame_to_work_area(
+        primary_height,
+        vis.origin.x,
+        vis.origin.y,
+        vis.size.width,
+        vis.size.height,
+    ))
+}
+
+fn current_work_area(window: &Window) -> Option<WorkArea> {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(area) = macos_work_area() {
+            return Some(area);
+        }
+    }
+
+    let monitor = window.current_monitor().or_else(|| window.primary_monitor())?;
+    let scale = monitor.scale_factor();
+    let pos = monitor.position();
+    let size = monitor.size();
+    let mx = pos.x as f64 / scale;
+    let my = pos.y as f64 / scale;
+    let mw = size.width as f64 / scale;
+    let mh = size.height as f64 / scale;
+
+    // Conservative safe area fallback for Windows taskbar / Linux desktop panels
+    let top_inset = 28.0;
+    let bottom_inset = 72.0;
+    Some(WorkArea {
+        x: mx,
+        y: my + top_inset,
+        width: mw,
+        height: (mh - top_inset - bottom_inset).max(200.0),
+    })
+}
+
+fn position_window_bottom_right(window: &Window, win_w: f64, win_h: f64) {
+    if let Some(area) = current_work_area(window) {
+        let (x, y) = area.bottom_right_position(win_w, win_h);
+        window.set_outer_position(LogicalPosition::new(x, y));
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -204,10 +321,12 @@ fn main() -> anyhow::Result<()> {
     #[cfg(not(target_os = "macos"))]
     let toggle_label = "Show / Hide Pill (Ctrl+Shift+P)";
     let toggle_item = MenuItem::new(toggle_label, true, None);
+    let reset_pos_item = MenuItem::new("Reset Pill Position (Bottom-Right)", true, None);
     let dashboard_item = MenuItem::new("Open Web Dashboard", true, None);
     let quit_item = MenuItem::new("Quit pa2pa Pill", true, None);
 
     let toggle_id = toggle_item.id().clone();
+    let reset_pos_id = reset_pos_item.id().clone();
     let dashboard_id = dashboard_item.id().clone();
     let quit_id = quit_item.id().clone();
 
@@ -215,6 +334,7 @@ fn main() -> anyhow::Result<()> {
     let _ = tray_menu.append(&status_item);
     let _ = tray_menu.append(&PredefinedMenuItem::separator());
     let _ = tray_menu.append(&toggle_item);
+    let _ = tray_menu.append(&reset_pos_item);
     let _ = tray_menu.append(&dashboard_item);
     let _ = tray_menu.append(&PredefinedMenuItem::separator());
     let _ = tray_menu.append(&quit_item);
@@ -244,19 +364,12 @@ fn main() -> anyhow::Result<()> {
     let window = builder.build(&event_loop)?;
     window.set_visible_on_all_workspaces(true);
 
-    // Position near bottom-center of primary monitor
-    if let Some(monitor) = window.primary_monitor() {
-        let scale = monitor.scale_factor();
-        let size = monitor.size();
-        let screen_w = size.width as f64 / scale;
-        let screen_h = size.height as f64 / scale;
-        let x = ((screen_w - COMPACT_W) / 2.0).max(16.0);
-        let y = (screen_h - COMPACT_H - 42.0).max(24.0);
-        window.set_outer_position(LogicalPosition::new(x, y));
-    }
+    // Position cleanly at bottom-right of the usable work area (above/beside the Dock/taskbar).
+    position_window_bottom_right(&window, COMPACT_W, COMPACT_H);
 
     let _webview = WebViewBuilder::new()
         .with_transparent(true)
+        .with_background_color((0, 0, 0, 0))
         .with_url(&pill_url)
         .with_ipc_handler(move |req| {
             if let Ok(cmd) = serde_json::from_str::<PillIpc>(req.body()) {
@@ -293,6 +406,17 @@ fn main() -> anyhow::Result<()> {
                 if ev.id == toggle_id {
                     is_visible = !is_visible;
                     window.set_visible(is_visible);
+                } else if ev.id == reset_pos_id {
+                    let (w, h) = if is_expanded {
+                        (EXPANDED_W, EXPANDED_H)
+                    } else {
+                        (COMPACT_W, COMPACT_H)
+                    };
+                    position_window_bottom_right(&window, w, h);
+                    if !is_visible {
+                        is_visible = true;
+                        window.set_visible(true);
+                    }
                 } else if ev.id == dashboard_id {
                     let _ = open::that(&base_url);
                 } else if ev.id == quit_id {
@@ -373,10 +497,19 @@ fn main() -> anyhow::Result<()> {
                     } else {
                         (COMPACT_W, COMPACT_H)
                     };
-                    let bottom_y = cur_pos.1 + old_h;
-                    let center_x = cur_pos.0 + old_w / 2.0;
-                    let new_x = (center_x - new_w / 2.0).max(8.0);
-                    let new_y = (bottom_y - new_h).max(24.0);
+
+                    let (new_x, new_y) = if let Some(area) = current_work_area(&window) {
+                        area.clamp_bottom_right_resize(
+                            cur_pos.0, cur_pos.1, old_w, old_h, new_w, new_h,
+                        )
+                    } else {
+                        let right_x = cur_pos.0 + old_w;
+                        let bottom_y = cur_pos.1 + old_h;
+                        (
+                            (right_x - new_w).max(CLAMP_MARGIN),
+                            (bottom_y - new_h).max(28.0),
+                        )
+                    };
 
                     window.set_inner_size(LogicalSize::new(new_w, new_h));
                     window.set_outer_position(LogicalPosition::new(new_x, new_y));
@@ -386,4 +519,51 @@ fn main() -> anyhow::Result<()> {
             _ => {}
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn macos_bottom_dock_places_pill_bottom_right_above_dock() {
+        // 1512x982 MacBook Pro, 38px menu bar at top, 82px Dock at bottom
+        let area = appkit_visible_frame_to_work_area(982.0, 0.0, 82.0, 1512.0, 862.0);
+        assert_eq!(area.x, 0.0);
+        assert_eq!(area.y, 38.0);
+        assert_eq!(area.width, 1512.0);
+        assert_eq!(area.height, 862.0);
+
+        let (x, y) = area.bottom_right_position(COMPACT_W, COMPACT_H);
+        assert_eq!(x, 1512.0 - COMPACT_W - EDGE_MARGIN);
+        assert_eq!(y, 38.0 + 862.0 - COMPACT_H - EDGE_MARGIN);
+        // Pill bottom edge stays strictly above the Dock top (900.0)
+        assert!(y + COMPACT_H < 900.0);
+    }
+
+    #[test]
+    fn macos_right_dock_places_pill_left_of_dock() {
+        // 1512x982 screen, 38px menu bar, 80px Dock on the right
+        let area = appkit_visible_frame_to_work_area(982.0, 0.0, 0.0, 1432.0, 944.0);
+        let (x, y) = area.bottom_right_position(COMPACT_W, COMPACT_H);
+        assert!(x + COMPACT_W < 1432.0);
+        assert!(y + COMPACT_H < 982.0);
+    }
+
+    #[test]
+    fn expand_from_bottom_right_keeps_right_and_bottom_edges_anchored() {
+        let area = WorkArea {
+            x: 0.0,
+            y: 38.0,
+            width: 1512.0,
+            height: 862.0,
+        };
+        let (cx, cy) = area.bottom_right_position(COMPACT_W, COMPACT_H);
+        let (ex, ey) =
+            area.clamp_bottom_right_resize(cx, cy, COMPACT_W, COMPACT_H, EXPANDED_W, EXPANDED_H);
+        assert!((ex + EXPANDED_W - (cx + COMPACT_W)).abs() < 0.01);
+        assert!((ey + EXPANDED_H - (cy + COMPACT_H)).abs() < 0.01);
+        assert!(ey >= area.y + CLAMP_MARGIN);
+        assert!(ey + EXPANDED_H <= area.y + area.height - CLAMP_MARGIN);
+    }
 }
