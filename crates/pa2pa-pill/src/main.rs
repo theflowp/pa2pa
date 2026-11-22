@@ -267,6 +267,27 @@ fn pin_macos_webview_bottom_right(webview: &wry::WebView) {
     }
 }
 
+/// Max length accepted for an IPC clipboard copy (an invite URI is a few hundred bytes).
+const MAX_COPY_LEN: usize = 8 * 1024;
+
+/// Copy text to the native macOS pasteboard (more reliable than `navigator.clipboard` in WKWebView).
+#[cfg(target_os = "macos")]
+fn copy_to_clipboard(text: &str) -> bool {
+    use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
+    use objc2_foundation::NSString;
+
+    let pb = NSPasteboard::generalPasteboard();
+    pb.clearContents();
+    let ns = NSString::from_str(text);
+    unsafe { pb.setString_forType(&ns, NSPasteboardTypeString) }
+}
+
+/// Other platforms: the pill page also writes via `navigator.clipboard`, so nothing to do natively.
+#[cfg(not(target_os = "macos"))]
+fn copy_to_clipboard(_text: &str) -> bool {
+    false
+}
+
 fn position_window_bottom_right(window: &Window, win_w: f64, win_h: f64) {
     if let Some(area) = current_work_area(window) {
         let (x, y) = area.bottom_right_position(win_w, win_h);
@@ -305,6 +326,9 @@ enum PillIpc {
     },
     Drag,
     OpenDashboard,
+    CopyText {
+        text: String,
+    },
     Quit,
     Status {
         relay_connected: bool,
@@ -575,6 +599,11 @@ fn main() -> anyhow::Result<()> {
                 }
                 PillIpc::OpenDashboard => {
                     let _ = open::that(&base_url);
+                }
+                PillIpc::CopyText { text } => {
+                    if !text.is_empty() && text.len() <= MAX_COPY_LEN {
+                        let _ = copy_to_clipboard(&text);
+                    }
                 }
                 PillIpc::Quit => {
                     *control_flow = ControlFlow::Exit;

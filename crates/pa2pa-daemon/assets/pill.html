@@ -318,6 +318,23 @@
       width: 12px;
       height: 12px;
     }
+    .head-btns {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .copy-btn {
+      transition:
+        transform 0.14s cubic-bezier(0.22, 1, 0.36, 1),
+        background-color 0.18s ease,
+        border-color 0.18s ease,
+        color 0.18s ease;
+    }
+    .copy-btn.copied {
+      background: rgba(52, 211, 153, 0.24);
+      border-color: rgba(52, 211, 153, 0.45);
+      color: #5eead4;
+    }
     #chevron-icon {
       transition: transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
       transform: rotate(0deg);
@@ -357,6 +374,8 @@
     const API_TOKEN = document.querySelector('meta[name="pa2pa-token"]')?.content || '';
     const MINUS_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 8h8"/></svg>';
     const PREV_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 4L6 8l4 4"/></svg>';
+    const LINK_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.8 9.2a2.6 2.6 0 0 0 3.7 0l2.2-2.2a2.6 2.6 0 0 0-3.7-3.7l-.9.9"/><path d="M9.2 6.8a2.6 2.6 0 0 0-3.7 0L3.3 9a2.6 2.6 0 0 0 3.7 3.7l.9-.9"/></svg>';
+    const CHECK_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg>';
     const NEXT_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg>';
 
     let expanded = false;
@@ -366,6 +385,8 @@
     let pendingApprovals = [];
     let activeIdx = 0;
     let lastApprovalCount = 0;
+    let copyFeedbackUntil = 0;
+    let copyFeedbackTimer = null;
 
     function apiFetch(path, opts = {}) {
       const headers = Object.assign({ 'X-Pa2pa-Token': API_TOKEN }, opts.headers || {});
@@ -525,6 +546,9 @@
         pill.classList.remove('alert');
         txt.textContent = `pa2pa · offline`;
       }
+      if (copyFeedbackActive()) {
+        txt.textContent = 'Invite link copied';
+      }
       postIpc({
         type: 'status',
         relay_connected: isOnline,
@@ -545,7 +569,10 @@
               @${esc(statusData?.name || 'pa2pa')}
               <span class="contacts-meta">${contactsLabel}</span>
             </span>
-            <button class="icon-btn min-btn" type="button" data-action="minimize" title="Minimize">${MINUS_SVG}</button>
+            <div class="head-btns">
+              ${statusData?.invite_uri ? `<button class="icon-btn min-btn copy-btn${copyFeedbackActive() ? ' copied' : ''}" type="button" data-action="copy-invite" title="Copy my invite link">${copyFeedbackActive() ? CHECK_SVG : LINK_SVG}</button>` : ''}
+              <button class="icon-btn min-btn" type="button" data-action="minimize" title="Minimize">${MINUS_SVG}</button>
+            </div>
           </div>
           <div class="reason">No pending approvals. Your personal agent is standing by (${esc(statusData?.default_runner || 'claude')}).</div>
         `;
@@ -571,6 +598,38 @@
           <button type="button" data-action="open-dashboard">Details</button>
         </div>
       `;
+    }
+
+    function copyFeedbackActive() {
+      return Date.now() < copyFeedbackUntil;
+    }
+
+    function setCopyButtonState(copied) {
+      document.querySelectorAll('[data-action="copy-invite"]').forEach(btn => {
+        btn.classList.toggle('copied', copied);
+        btn.innerHTML = copied ? CHECK_SVG : LINK_SVG;
+      });
+    }
+
+    async function copyInvite() {
+      const uri = statusData?.invite_uri;
+      if (!uri) return;
+      // Native NSPasteboard copy through the pill window (reliable inside WKWebView)...
+      postIpc({ type: 'copy_text', text: uri });
+      // ...plus the web clipboard as a fallback (Windows/Linux WebViews, or a regular browser tab).
+      try {
+        if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(uri);
+      } catch (_) { /* native copy already handled it */ }
+
+      copyFeedbackUntil = Date.now() + 1500;
+      setCopyButtonState(true);
+      renderPill();
+      if (copyFeedbackTimer) clearTimeout(copyFeedbackTimer);
+      copyFeedbackTimer = setTimeout(() => {
+        copyFeedbackTimer = null;
+        setCopyButtonState(false);
+        renderPill();
+      }, 1500);
     }
 
     function cycleApproval(delta) {
@@ -621,6 +680,7 @@
       else if (action === 'deny') deny(el.dataset.id);
       else if (action === 'cycle') cycleApproval(Number(el.dataset.delta || 0));
       else if (action === 'open-dashboard') openDashboard();
+      else if (action === 'copy-invite') copyInvite();
       else if (action === 'minimize') setExpanded(false);
     });
 
