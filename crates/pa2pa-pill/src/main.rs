@@ -350,8 +350,10 @@ fn macos_fullscreen_active(window: &Window) -> bool {
     let (wx, wy, ww, wh) = get_window_rect_logical(window, COMPACT_W, COMPACT_H);
     let (cx, cy) = (wx + ww / 2.0, wy + wh / 2.0);
     let mut display = None;
+    let mut display_id: Option<u32> = None;
     for i in 0..screens.count() {
-        let f = screens.objectAtIndex(i).frame();
+        let screen = screens.objectAtIndex(i);
+        let f = screen.frame();
         let r = Rect {
             x: f.origin.x,
             y: primary_h - (f.origin.y + f.size.height),
@@ -360,6 +362,21 @@ fn macos_fullscreen_active(window: &Window) -> bool {
         };
         if r.contains_point(cx, cy) {
             display = Some(r);
+            display_id = unsafe {
+                let desc: *mut objc2::runtime::AnyObject = msg_send![&*screen, deviceDescription];
+                if desc.is_null() {
+                    None
+                } else {
+                    let key = objc2_foundation::ns_string!("NSScreenNumber");
+                    let num: *mut objc2::runtime::AnyObject = msg_send![desc, objectForKey: key];
+                    if num.is_null() {
+                        None
+                    } else {
+                        let id: u32 = msg_send![num, unsignedIntValue];
+                        Some(id)
+                    }
+                }
+            };
             break;
         }
     }
@@ -367,15 +384,116 @@ fn macos_fullscreen_active(window: &Window) -> bool {
         return false;
     };
 
+    // 1) Native fullscreen (green button, YouTube/Safari/Chrome video, Split View): the display's
+    //    current Space is a fullscreen Space. This is the only reliable signal on notched MacBooks,
+    //    where a fullscreen window stops below the notch and has the same bounds as a zoomed one.
+    let space_type = display_id.and_then(macos_display_space_type);
+    // 2) Borderless fullscreen that stays on a regular Space (games, some players, presentations).
     let windows = macos_onscreen_windows();
-    let fs = frontmost_is_fullscreen(&windows, frontmost_pid, std::process::id() as i32, &display);
+    let covering =
+        frontmost_is_fullscreen(&windows, frontmost_pid, std::process::id() as i32, &display);
+    let fs = space_type == Some(CGS_SPACE_TYPE_FULLSCREEN) || covering;
     if std::env::var_os("PA2PA_PILL_DEBUG_FULLSCREEN").is_some() {
         eprintln!(
-            "[pa2pa-pill] fullscreen check: frontmost_pid={frontmost_pid} display={display:?} windows={} -> {fs}",
+            "[pa2pa-pill] fullscreen check: display_id={display_id:?} space_type={space_type:?} frontmost_pid={frontmost_pid} covering={covering} windows={} -> {fs}",
             windows.len()
         );
     }
     fs
+}
+
+/// `type` of a fullscreen Space in `CGSCopyManagedDisplaySpaces` (0 = regular desktop).
+#[cfg(target_os = "macos")]
+const CGS_SPACE_TYPE_FULLSCREEN: i64 = 4;
+
+/// Type of the current Space on the given display, via the (private but long-stable) CoreGraphics
+/// Spaces API also used by yabai / Hammerspoon. Symbols are resolved with `dlsym` so a future macOS
+/// that drops them only disables this signal instead of breaking the binary at load time.
+#[cfg(target_os = "macos")]
+fn macos_display_space_type(display_id: u32) -> Option<i64> {
+    use core_foundation::array::{CFArray, CFArrayRef};
+    use core_foundation::base::{CFType, TCFType};
+    use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
+    use core_foundation::number::CFNumber;
+    use core_foundation::string::{CFString, CFStringRef};
+    use std::ffi::{c_char, c_void};
+    use std::sync::OnceLock;
+
+    type ConnFn = unsafe extern "C" fn() -> i32;
+    type SpacesFn = unsafe extern "C" fn(i32) -> CFArrayRef;
+    type UuidFn = unsafe extern "C" fn(u32) -> *const c_void;
+    extern "C" {
+        fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+        fn CFUUIDCreateString(alloc: *const c_void, uuid: *const c_void) -> CFStringRef;
+        fn CFRelease(cf: *const c_void);
+    }
+    const RTLD_DEFAULT: *mut c_void = -2isize as *mut c_void;
+
+    struct Syms {
+        conn: ConnFn,
+        spaces: SpacesFn,
+        uuid: Option<UuidFn>,
+    }
+    static SYMS: OnceLock<Option<Syms>> = OnceLock::new();
+    let syms = SYMS
+        .get_or_init(|| unsafe {
+            let c = dlsym(RTLD_DEFAULT, c"CGSMainConnectionID".as_ptr());
+            let s = dlsym(RTLD_DEFAULT, c"CGSCopyManagedDisplaySpaces".as_ptr());
+            let u = dlsym(RTLD_DEFAULT, c"CGDisplayCreateUUIDFromDisplayID".as_ptr());
+            if c.is_null() || s.is_null() {
+                return None;
+            }
+            Some(Syms {
+                conn: std::mem::transmute::<*mut c_void, ConnFn>(c),
+                spaces: std::mem::transmute::<*mut c_void, SpacesFn>(s),
+                uuid: (!u.is_null()).then(|| std::mem::transmute::<*mut c_void, UuidFn>(u)),
+            })
+        })
+        .as_ref()?;
+
+    let want_uuid: Option<String> = syms.uuid.and_then(|f| unsafe {
+        let u = f(display_id);
+        if u.is_null() {
+            return None;
+        }
+        let s = CFUUIDCreateString(std::ptr::null(), u);
+        CFRelease(u);
+        (!s.is_null()).then(|| CFString::wrap_under_create_rule(s).to_string())
+    });
+
+    let arr_ref = unsafe { (syms.spaces)((syms.conn)()) };
+    if arr_ref.is_null() {
+        return None;
+    }
+    let displays: CFArray<CFDictionary<CFString, CFType>> =
+        unsafe { CFArray::wrap_under_create_rule(arr_ref) };
+
+    let k_ident = CFString::from_static_string("Display Identifier");
+    let k_current = CFString::from_static_string("Current Space");
+    let k_type = CFString::from_static_string("type");
+    let single = displays.len() == 1;
+    let mut main_fallback = None;
+    for d in displays.iter() {
+        let space_type = d.find(&k_current).and_then(|cur| {
+            let cur: CFDictionary<CFString, CFType> = unsafe {
+                CFDictionary::wrap_under_get_rule(cur.as_CFTypeRef() as CFDictionaryRef)
+            };
+            cur.find(&k_type)?.downcast::<CFNumber>()?.to_i64()
+        });
+        if single {
+            return space_type;
+        }
+        let ident = d
+            .find(&k_ident)
+            .and_then(|v| v.downcast::<CFString>())
+            .map(|s| s.to_string());
+        match (&ident, &want_uuid) {
+            (Some(i), Some(w)) if i.eq_ignore_ascii_case(w) => return space_type,
+            (Some(i), _) if i == "Main" => main_fallback = space_type,
+            _ => {}
+        }
+    }
+    main_fallback
 }
 
 /// Visible windows from the window server (pid / layer / alpha / bounds need no Screen Recording
@@ -462,16 +580,16 @@ fn macos_observe_fullscreen_triggers(
     let center = NSWorkspace::sharedWorkspace().notificationCenter();
     let names = unsafe {
         [
-            NSWorkspaceActiveSpaceDidChangeNotification,
-            NSWorkspaceDidActivateApplicationNotification,
+            (NSWorkspaceActiveSpaceDidChangeNotification, true),
+            (NSWorkspaceDidActivateApplicationNotification, false),
         ]
     };
     names
         .into_iter()
-        .map(|name| {
+        .map(|(name, space_changed)| {
             let proxy = proxy.clone();
             let block = RcBlock::new(move |_n: NonNull<NSNotification>| {
-                let _ = proxy.send_event(AppEvent::FullscreenTrigger);
+                let _ = proxy.send_event(AppEvent::FullscreenTrigger { space_changed });
             });
             unsafe { center.addObserverForName_object_queue_usingBlock(Some(name), None, None, &block) }
         })
@@ -559,9 +677,9 @@ enum AppEvent {
     Ipc(PillIpc),
     Menu(MenuEvent),
     HotKey(GlobalHotKeyEvent),
-    /// A Space or frontmost-app change happened: re-evaluate fullscreen state soon.
+    /// A Space (`space_changed`) or frontmost-app change happened: re-evaluate fullscreen soon.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    FullscreenTrigger,
+    FullscreenTrigger { space_changed: bool },
 }
 
 /// Programmatically render a crisp 32x32 RGBA tray/menu-bar icon with live status dot.
@@ -840,7 +958,11 @@ fn main() -> anyhow::Result<()> {
                 fs_override = false;
                 sync_visibility(&window, false, &mut shown);
             }
-            Event::UserEvent(AppEvent::FullscreenTrigger) => {
+            Event::UserEvent(AppEvent::FullscreenTrigger { space_changed }) => {
+                // Summoning the pill over a fullscreen app lasts until you leave that Space.
+                if space_changed {
+                    fs_override = false;
+                }
                 let now = Instant::now();
                 fs_rechecks = FULLSCREEN_RECHECKS_MS
                     .iter()
