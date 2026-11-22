@@ -51,7 +51,7 @@ pub async fn bind_local_p2p_endpoint(identity: &Identity) -> Result<Endpoint> {
     Ok(ep)
 }
 
-/// Write a single JSON `P2pFrame` and close the send half of the stream.
+/// Write a single JSON `P2pFrame`, finish the stream, and wait briefly for the peer to receive it.
 pub async fn write_p2p_frame(send: &mut SendStream, frame: &P2pFrame) -> Result<()> {
     let bytes = serde_json::to_vec(frame)?;
     if bytes.len() > MAX_P2P_FRAME_BYTES {
@@ -61,6 +61,14 @@ pub async fn write_p2p_frame(send: &mut SendStream, frame: &P2pFrame) -> Result<
         .await
         .context("Failed to write P2P frame")?;
     send.finish().context("Failed to finish P2P send stream")?;
+    Ok(())
+}
+
+/// Write a response `P2pFrame` on the server side and wait for the client to acknowledge stream delivery
+/// (or close the connection) before dropping the QUIC connection.
+pub async fn write_p2p_response_and_flush(send: &mut SendStream, frame: &P2pFrame) -> Result<()> {
+    write_p2p_frame(send, frame).await?;
+    let _ = timeout(Duration::from_secs(2), send.stopped()).await;
     Ok(())
 }
 
@@ -205,7 +213,7 @@ mod tests {
                 P2pFrame::Deliver { envelope } => {
                     let pt = open_envelope(&flo_clone, &ben_pub, &envelope).unwrap();
                     let msg: AgentMessage = serde_json::from_slice(&pt).unwrap();
-                    write_p2p_frame(
+                    write_p2p_response_and_flush(
                         &mut send,
                         &P2pFrame::Ack {
                             message_id: envelope.message_id,

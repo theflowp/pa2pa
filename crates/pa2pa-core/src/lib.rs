@@ -11,7 +11,7 @@ pub use contacts::{Contact, ContactStore, TrustLevel};
 pub use p2p::{
     bind_local_p2p_endpoint, bind_p2p_endpoint, iroh_secret_key, local_endpoint_id,
     peer_endpoint_id, probe_p2p_peer, read_p2p_frame, send_p2p_activity, send_p2p_envelope,
-    write_p2p_frame, PA2PA_P2P_ALPN,
+    write_p2p_frame, write_p2p_response_and_flush, PA2PA_P2P_ALPN,
 };
 pub use policy::{
     build_safe_agent_prompt, evaluate_incoming, format_mcp_envelope, parse_escalation,

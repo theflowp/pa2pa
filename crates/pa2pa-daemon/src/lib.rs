@@ -11,7 +11,7 @@ use pa2pa_core::{
     authenticate_ws, bind_p2p_endpoint, decrypt_and_store_inbound, deliver_message,
     evaluate_incoming, local_endpoint_id, normalize_relay_ws_url, parse_escalation,
     peer_endpoint_id, read_p2p_frame, send_p2p_activity, send_p2p_envelope,
-    send_sealed_envelope_via_relay, write_p2p_frame, Config, ContactStore, Pa2paPaths,
+    send_sealed_envelope_via_relay, write_p2p_response_and_flush, Config, ContactStore, Pa2paPaths,
     PolicyDecision, Store,
 };
 use pa2pa_crypto::Identity;
@@ -287,7 +287,7 @@ async fn p2p_accept_loop(state: Arc<DaemonState>) {
 
             match frame {
                 P2pFrame::Ping => {
-                    let _ = write_p2p_frame(&mut send, &P2pFrame::Pong).await;
+                    let _ = write_p2p_response_and_flush(&mut send, &P2pFrame::Pong).await;
                 }
                 P2pFrame::Activity { thread_id, state: act } => {
                     let mut map = st.thinking_peers.write().await;
@@ -301,11 +301,11 @@ async fn p2p_accept_loop(state: Arc<DaemonState>) {
                     }
                     drop(map);
                     st.emit(DaemonEvent::refresh("peer_activity"));
-                    let _ = write_p2p_frame(&mut send, &P2pFrame::Pong).await;
+                    let _ = write_p2p_response_and_flush(&mut send, &P2pFrame::Pong).await;
                 }
                 P2pFrame::Deliver { envelope } => {
                     if envelope.sender_fingerprint != contact.fingerprint {
-                        let _ = write_p2p_frame(
+                        let _ = write_p2p_response_and_flush(
                             &mut send,
                             &P2pFrame::Error {
                                 code: "sender_mismatch".into(),
@@ -328,8 +328,11 @@ async fn p2p_accept_loop(state: Arc<DaemonState>) {
                     };
                     match decrypt_and_store_inbound(&identity, &contacts, &store, &envelope) {
                         Ok(Some((verified_contact, msg))) => {
-                            let _ = write_p2p_frame(&mut send, &P2pFrame::Ack { message_id: msg_id })
-                                .await;
+                            let _ = write_p2p_response_and_flush(
+                                &mut send,
+                                &P2pFrame::Ack { message_id: msg_id },
+                            )
+                            .await;
                             let st_inner = st.clone();
                             tokio::spawn(async move {
                                 handle_inbound_message(st_inner, verified_contact, msg).await;
@@ -337,11 +340,14 @@ async fn p2p_accept_loop(state: Arc<DaemonState>) {
                         }
                         Ok(None) => {
                             // Duplicate/replayed message ID — ack cleanly so sender stops retrying
-                            let _ = write_p2p_frame(&mut send, &P2pFrame::Ack { message_id: msg_id })
-                                .await;
+                            let _ = write_p2p_response_and_flush(
+                                &mut send,
+                                &P2pFrame::Ack { message_id: msg_id },
+                            )
+                            .await;
                         }
                         Err(e) => {
-                            let _ = write_p2p_frame(
+                            let _ = write_p2p_response_and_flush(
                                 &mut send,
                                 &P2pFrame::Error {
                                     code: "decrypt_failed".into(),
