@@ -141,7 +141,9 @@ pub struct InvitePayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     pub ssh_key: String,
-    pub relay: String,
+    /// Optional mailbox relay URL. Omitted in pure zero-server P2P mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<String>,
 }
 
 impl InvitePayload {
@@ -230,6 +232,28 @@ pub enum ServerFrame {
     },
 }
 
+/// Frames exchanged directly peer-to-peer over an Iroh QUIC bidirectional stream (`ALPN: pa2pa/p2p/1`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum P2pFrame {
+    Deliver {
+        envelope: EncryptedEnvelope,
+    },
+    Ack {
+        message_id: String,
+    },
+    Activity {
+        thread_id: String,
+        state: PeerActivityState,
+    },
+    Ping,
+    Pong,
+    Error {
+        code: String,
+        message: String,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,11 +264,21 @@ mod tests {
             name: "benjamin".into(),
             display_name: Some("Benjamin (Lead)".into()),
             ssh_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKey benjamin".into(),
-            relay: "wss://relay.example.com/ws".into(),
+            relay: Some("wss://relay.example.com/ws".into()),
         };
         let encoded = inv.encode().unwrap();
         assert!(encoded.starts_with(INVITE_PREFIX));
         let decoded = InvitePayload::decode(&encoded).unwrap();
         assert_eq!(inv, decoded);
+
+        // Zero-server P2P invite (no relay)
+        let p2p_inv = InvitePayload {
+            name: "flo".into(),
+            display_name: None,
+            ssh_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKey flo".into(),
+            relay: None,
+        };
+        let p2p_enc = p2p_inv.encode().unwrap();
+        assert_eq!(p2p_inv, InvitePayload::decode(&p2p_enc).unwrap());
     }
 }

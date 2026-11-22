@@ -284,6 +284,8 @@
 
       const thinkingEntries = Object.keys(statusData.thinking_peers || {});
       const onlineCount = (statusData.online_peers || []).length;
+      const isOnline = Boolean(statusData.p2p_ready || statusData.relay_connected);
+      const outboxCount = Number(statusData.pending_outbox || 0);
       if (pendingApprovals.length > 0) {
         dot.className = 'dot warn';
         pill.classList.add('alert');
@@ -292,20 +294,25 @@
         dot.className = 'dot ok';
         pill.classList.remove('alert');
         txt.textContent = `⏳ @${thinkingEntries[0]} thinking…`;
-      } else if (statusData.relay_connected) {
+      } else if (isOnline) {
         dot.className = 'dot ok';
         pill.classList.remove('alert');
-        txt.textContent = statusData.unread_messages > 0
-          ? `${statusData.unread_messages} unread · @${statusData.name}`
-          : `pa2pa · @${statusData.name} (${onlineCount} online)`;
+        const modeLabel = statusData.p2p_ready && !statusData.relay_connected ? 'P2P' : 'online';
+        if (statusData.unread_messages > 0) {
+          txt.textContent = `${statusData.unread_messages} unread · @${statusData.name}`;
+        } else if (outboxCount > 0) {
+          txt.textContent = `${outboxCount} queued · @${statusData.name} (${modeLabel})`;
+        } else {
+          txt.textContent = `pa2pa · @${statusData.name} (${modeLabel}${onlineCount > 0 ? ' · ' + onlineCount : ''})`;
+        }
       } else {
         dot.className = 'dot err';
         pill.classList.remove('alert');
-        txt.textContent = `pa2pa · relay offline`;
+        txt.textContent = `pa2pa · offline`;
       }
       postIpc({
         type: 'status',
-        relay_connected: Boolean(statusData.relay_connected),
+        relay_connected: isOnline,
         pending_approvals: pendingApprovals.length,
         unread_messages: Number(statusData.unread_messages || 0),
         online_peers: onlineCount,

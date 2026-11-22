@@ -1,7 +1,7 @@
 class Pa2pa < Formula
   desc "Personal Agent to Personal Agent — SSH-authenticated, E2E encrypted agent messaging"
   homepage "https://github.com/theflowp/pa2pa"
-  version "0.1.0"
+  version "0.2.0"
   license "MIT"
 
   on_macos do

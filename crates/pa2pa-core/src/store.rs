@@ -1,6 +1,6 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use pa2pa_crypto::Identity;
+use pa2pa_crypto::{EncryptedEnvelope, Identity};
 use pa2pa_proto::Attachment;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -61,10 +61,23 @@ pub struct ApprovalRecord {
     pub decided_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OutboxEntry {
+    pub message_id: String,
+    pub peer_alias: String,
+    pub peer_fingerprint: String,
+    pub envelope: EncryptedEnvelope,
+    pub attempts: u32,
+    pub last_error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub next_retry_at: DateTime<Utc>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct InboxCounts {
     pub unread_messages: i64,
     pub pending_approvals: i64,
+    pub pending_outbox: i64,
 }
 
 pub struct Store {
@@ -127,7 +140,18 @@ impl Store {
                  created_at TEXT NOT NULL,
                  decided_at TEXT
              );
-             CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, created_at);",
+             CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, created_at);
+             CREATE TABLE IF NOT EXISTS outbox (
+                 message_id TEXT PRIMARY KEY,
+                 peer_alias TEXT NOT NULL,
+                 peer_fingerprint TEXT NOT NULL,
+                 envelope_json TEXT NOT NULL,
+                 attempts INTEGER NOT NULL DEFAULT 0,
+                 last_error TEXT,
+                 created_at TEXT NOT NULL,
+                 next_retry_at TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_outbox_retry ON outbox(next_retry_at);",
         )?;
         // Backwards-compatible migration for existing DBs without attachments_json
         let _ = conn.execute("ALTER TABLE messages ADD COLUMN attachments_json TEXT", []);
@@ -436,6 +460,104 @@ impl Store {
         self.get_approval(id)
     }
 
+    pub fn enqueue_outbox(
+        &self,
+        peer_alias: &str,
+        peer_fingerprint: &str,
+        envelope: &EncryptedEnvelope,
+        last_error: Option<&str>,
+    ) -> Result<()> {
+        let now = Utc::now();
+        let next = now + chrono::Duration::seconds(5);
+        let env_json = serde_json::to_string(envelope)?;
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "INSERT OR REPLACE INTO outbox
+             (message_id, peer_alias, peer_fingerprint, envelope_json, attempts, last_error, created_at, next_retry_at)
+             VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7)",
+            params![
+                envelope.message_id,
+                peer_alias,
+                peer_fingerprint,
+                env_json,
+                last_error,
+                now.to_rfc3339(),
+                next.to_rfc3339(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_due_outbox(&self, limit: usize) -> Result<Vec<OutboxEntry>> {
+        let now = Utc::now().to_rfc3339();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare(
+            "SELECT message_id, peer_alias, peer_fingerprint, envelope_json, attempts, last_error, created_at, next_retry_at
+             FROM outbox WHERE next_retry_at <= ?1 ORDER BY next_retry_at ASC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![now, limit as i64], |row| {
+            let env_str: String = row.get(3)?;
+            let created_str: String = row.get(6)?;
+            let next_str: String = row.get(7)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                env_str,
+                row.get::<_, i64>(4)? as u32,
+                row.get::<_, Option<String>>(5)?,
+                created_str,
+                next_str,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            let (message_id, peer_alias, peer_fingerprint, env_str, attempts, last_error, c_str, n_str) = r?;
+            if let Ok(envelope) = serde_json::from_str::<EncryptedEnvelope>(&env_str) {
+                let created_at = DateTime::parse_from_rfc3339(&c_str)
+                    .map(|d| d.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now());
+                let next_retry_at = DateTime::parse_from_rfc3339(&n_str)
+                    .map(|d| d.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now());
+                out.push(OutboxEntry {
+                    message_id,
+                    peer_alias,
+                    peer_fingerprint,
+                    envelope,
+                    attempts,
+                    last_error,
+                    created_at,
+                    next_retry_at,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn mark_outbox_retry(&self, message_id: &str, attempts: u32, err: &str) -> Result<()> {
+        let delay_secs = (5i64 * (1i64 << attempts.min(4))).min(60);
+        let next = (Utc::now() + chrono::Duration::seconds(delay_secs)).to_rfc3339();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "UPDATE outbox SET attempts = ?1, last_error = ?2, next_retry_at = ?3 WHERE message_id = ?4",
+            params![attempts as i64, err, next, message_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_outbox(&self, message_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute("DELETE FROM outbox WHERE message_id = ?1", params![message_id])?;
+        Ok(())
+    }
+
+    pub fn purge_expired_outbox(&self, max_age_days: i64) -> Result<usize> {
+        let cutoff = (Utc::now() - chrono::Duration::days(max_age_days)).to_rfc3339();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(conn.execute("DELETE FROM outbox WHERE created_at < ?1", params![cutoff])?)
+    }
+
     pub fn counts(&self) -> Result<InboxCounts> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let unread_messages: i64 = conn.query_row(
@@ -448,9 +570,11 @@ impl Store {
             [],
             |r| r.get(0),
         )?;
+        let pending_outbox: i64 = conn.query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get(0))?;
         Ok(InboxCounts {
             unread_messages,
             pending_approvals,
+            pending_outbox,
         })
     }
 }

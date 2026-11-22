@@ -195,11 +195,69 @@ impl Default for DaemonConfig {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum TransportMode {
+    /// Direct P2P QUIC first (zero server needed), optional mailbox relay fallback, plus local outbox retry.
+    Hybrid,
+    /// Direct P2P QUIC + local outbox retry only (never touches a mailbox relay).
+    P2pOnly,
+    /// Mailbox relay only (disables local P2P QUIC endpoint).
+    RelayOnly,
+}
+
+impl Default for TransportMode {
+    fn default() -> Self {
+        Self::Hybrid
+    }
+}
+
+impl TransportMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Hybrid => "hybrid",
+            Self::P2pOnly => "p2p-only",
+            Self::RelayOnly => "relay-only",
+        }
+    }
+
+    pub fn p2p_enabled(&self) -> bool {
+        !matches!(self, Self::RelayOnly)
+    }
+
+    pub fn relay_enabled(&self) -> bool {
+        !matches!(self, Self::P2pOnly)
+    }
+}
+
+impl std::fmt::Display for TransportMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for TransportMode {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "hybrid" | "auto" => Ok(Self::Hybrid),
+            "p2p" | "p2p-only" | "direct" => Ok(Self::P2pOnly),
+            "relay" | "relay-only" => Ok(Self::RelayOnly),
+            other => anyhow::bail!("Unknown transport `{other}`. Valid: hybrid, p2p-only, relay-only"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
     pub name: String,
     pub display_name: String,
-    pub relay_url: String,
+    /// Optional WebSocket mailbox relay URL. Omit (`None`) for pure zero-server P2P mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_url: Option<String>,
+    #[serde(default)]
+    pub transport: TransportMode,
     pub key_path: PathBuf,
     #[serde(default)]
     pub daemon: DaemonConfig,

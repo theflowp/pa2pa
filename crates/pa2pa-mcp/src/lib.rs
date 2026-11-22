@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use pa2pa_core::{
-    format_mcp_envelope, pull_pending_messages, send_encrypted_message, Config, ContactStore,
-    Pa2paPaths, Store,
+    deliver_message, format_mcp_envelope, local_endpoint_id, pull_pending_messages, Config,
+    ContactStore, Pa2paPaths, Store,
 };
 use pa2pa_crypto::Identity;
 use pa2pa_proto::{AgentMessage, Attachment, InvitePayload};
@@ -325,6 +325,7 @@ async fn call_tool(paths: &Pa2paPaths, name: &str, args: Value) -> Result<Value>
 fn tool_whoami(paths: &Pa2paPaths) -> Result<Value> {
     let cfg = Config::load(paths)?;
     let id = Identity::load_openssh(&cfg.key_path)?;
+    let p2p_id = local_endpoint_id(&id).ok().map(|e| e.to_string());
     let invite = InvitePayload {
         name: cfg.name.clone(),
         display_name: Some(cfg.display_name.clone()),
@@ -336,6 +337,8 @@ fn tool_whoami(paths: &Pa2paPaths) -> Result<Value> {
         "name": cfg.name,
         "display_name": cfg.display_name,
         "fingerprint": id.fingerprint(),
+        "p2p_endpoint_id": p2p_id,
+        "transport": cfg.transport,
         "ssh_public_key": id.openssh_public_key(),
         "relay_url": cfg.relay_url,
         "invite_uri": invite,
@@ -400,23 +403,27 @@ async fn tool_send_message(paths: &Pa2paPaths, args: Value) -> Result<Value> {
         0,
     )
     .with_attachments(attachments);
-    let sent = send_encrypted_message(&cfg.relay_url, &id, &contact, msg, Some(&store)).await?;
+    let outcome = deliver_message(&cfg, &id, &contact, msg, &store, None).await?;
     ping_daemon_refresh(paths, &cfg.daemon.ui_bind).await;
 
     let mut reply_received = None;
     if wait_seconds > 0 {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_seconds);
-        let sent_at = sent.message.created_at;
+        let sent_at = outcome.message.created_at;
         while tokio::time::Instant::now() < deadline {
-            let _ = pull_pending_messages(
-                &cfg.relay_url,
-                &id,
-                &contacts,
-                &store,
-                cfg.daemon.sync_allowlist_to_relay,
-            )
-            .await;
-            let msgs = store.list_thread_messages(&sent.message.thread_id)?;
+            if let Some(ref relay_url) = cfg.relay_url {
+                if cfg.transport.relay_enabled() {
+                    let _ = pull_pending_messages(
+                        relay_url,
+                        &id,
+                        &contacts,
+                        &store,
+                        cfg.daemon.sync_allowlist_to_relay,
+                    )
+                    .await;
+                }
+            }
+            let msgs = store.list_thread_messages(&outcome.message.thread_id)?;
             if let Some(reply) = msgs
                 .into_iter()
                 .rev()
@@ -431,9 +438,11 @@ async fn tool_send_message(paths: &Pa2paPaths, args: Value) -> Result<Value> {
 
     Ok(json!({
         "sent": true,
-        "delivered_live": sent.delivered_live,
-        "message_id": sent.message.message_id,
-        "thread_id": sent.message.thread_id,
+        "delivered_live": outcome.method.is_live(),
+        "delivery_method": outcome.method,
+        "detail": outcome.detail,
+        "message_id": outcome.message.message_id,
+        "thread_id": outcome.message.thread_id,
         "to": contact.alias,
         "reply": reply_received
     }))
@@ -452,18 +461,22 @@ async fn tool_check_inbox(
 
     let mut pulled_count = 0usize;
     let mut relay_warning: Option<String> = None;
-    if sync_relay {
-        match pull_pending_messages(
-            &cfg.relay_url,
-            &id,
-            &contacts,
-            &store,
-            cfg.daemon.sync_allowlist_to_relay,
-        )
-        .await
-        {
-            Ok(pulled) => pulled_count = pulled.len(),
-            Err(e) => relay_warning = Some(format!("Relay unreachable ({e}); showing local inbox")),
+    if sync_relay && cfg.transport.relay_enabled() {
+        if let Some(ref relay_url) = cfg.relay_url {
+            match pull_pending_messages(
+                relay_url,
+                &id,
+                &contacts,
+                &store,
+                cfg.daemon.sync_allowlist_to_relay,
+            )
+            .await
+            {
+                Ok(pulled) => pulled_count = pulled.len(),
+                Err(e) => {
+                    relay_warning = Some(format!("Relay unreachable ({e}); showing local inbox"))
+                }
+            }
         }
     }
 
@@ -551,14 +564,16 @@ async fn tool_reply(paths: &Pa2paPaths, args: Value) -> Result<Value> {
         Some(last.id.clone()),
         last.auto_turn.saturating_add(1),
     );
-    let sent = send_encrypted_message(&cfg.relay_url, &id, &contact, msg, Some(&store)).await?;
+    let outcome = deliver_message(&cfg, &id, &contact, msg, &store, None).await?;
     store.mark_thread_read(thread_id)?;
     ping_daemon_refresh(paths, &cfg.daemon.ui_bind).await;
 
     Ok(json!({
         "replied": true,
-        "delivered_live": sent.delivered_live,
-        "message_id": sent.message.message_id,
+        "delivered_live": outcome.method.is_live(),
+        "delivery_method": outcome.method,
+        "detail": outcome.detail,
+        "message_id": outcome.message.message_id,
         "thread_id": thread_id,
         "to": contact.alias
     }))

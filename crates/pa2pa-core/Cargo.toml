@@ -10,6 +10,7 @@ base64.workspace = true
 chrono.workspace = true
 dirs.workspace = true
 futures-util.workspace = true
+iroh.workspace = true
 pa2pa-crypto.workspace = true
 pa2pa-proto.workspace = true
 reqwest.workspace = true

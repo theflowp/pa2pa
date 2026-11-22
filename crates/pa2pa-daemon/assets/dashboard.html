@@ -383,8 +383,14 @@
           </select>
           <label>Default Workspace Directory (optional)</label>
           <input id="cfg-workdir" placeholder="~/projects/my-repo" />
-          <label>Relay URL</label>
-          <input id="cfg-relay" />
+          <label>Transport Mode</label>
+          <select id="cfg-transport">
+            <option value="hybrid">Hybrid (Direct P2P QUIC + optional Relay)</option>
+            <option value="p2p-only">P2P Only (Zero-Server QUIC + local outbox)</option>
+            <option value="relay-only">Relay Only (Mailbox WebSocket)</option>
+          </select>
+          <label>Optional Mailbox Relay URL (leave blank for pure zero-server P2P)</label>
+          <input id="cfg-relay" placeholder="wss://relay.your-team.dev/ws (optional)" />
           <div style="margin-top:12px">
             <button class="btn primary" onclick="saveConfig()">Save Settings</button>
           </div>
@@ -479,12 +485,21 @@
       document.getElementById('identity-fp').textContent = s.fingerprint;
       const dot = document.getElementById('relay-dot');
       const lbl = document.getElementById('relay-label');
-      if (s.relay_connected) {
+      const outboxNote = s.pending_outbox > 0 ? ` · ${s.pending_outbox} queued` : '';
+      if (s.p2p_ready && s.relay_connected) {
         dot.className = 'dot ok';
-        lbl.textContent = 'Relay Connected (E2E)';
+        lbl.textContent = `P2P + Relay Connected (E2E)${outboxNote}`;
+      } else if (s.p2p_ready) {
+        dot.className = 'dot ok';
+        lbl.textContent = s.relay_url
+          ? `P2P Ready (Relay offline)${outboxNote}`
+          : `P2P Ready (Zero-Server E2E)${outboxNote}`;
+      } else if (s.relay_connected) {
+        dot.className = 'dot ok';
+        lbl.textContent = `Relay Connected (E2E)${outboxNote}`;
       } else {
         dot.className = 'dot err';
-        lbl.textContent = s.relay_error ? `Offline: ${s.relay_error.slice(0, 32)}` : 'Relay Offline';
+        lbl.textContent = s.relay_error ? `Offline: ${s.relay_error.slice(0, 32)}` : 'Offline';
       }
       document.getElementById('runner-label').textContent = s.default_runner;
 
@@ -804,7 +819,8 @@
       if (state.config) {
         document.getElementById('cfg-runner').value = state.config.daemon.default_runner;
         document.getElementById('cfg-workdir').value = state.config.daemon.default_workdir || '';
-        document.getElementById('cfg-relay').value = state.config.relay_url;
+        document.getElementById('cfg-transport').value = state.config.transport || 'hybrid';
+        document.getElementById('cfg-relay').value = state.config.relay_url || '';
       }
       document.getElementById('runners-grid').innerHTML = (s.runners || []).map(r => `
         <span class="badge">
@@ -822,6 +838,7 @@
           body: JSON.stringify({
             default_runner: document.getElementById('cfg-runner').value,
             default_workdir: document.getElementById('cfg-workdir').value.trim(),
+            transport: document.getElementById('cfg-transport').value,
             relay_url: document.getElementById('cfg-relay').value.trim(),
           }),
         });

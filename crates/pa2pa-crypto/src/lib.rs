@@ -274,6 +274,16 @@ impl Identity {
         &self.verifying_key
     }
 
+    /// Raw 32-byte Ed25519 public key (identical to the peer's Iroh P2P EndpointId).
+    pub fn ed25519_public_bytes(&self) -> [u8; 32] {
+        self.verifying_key.to_bytes()
+    }
+
+    /// Raw 32-byte Ed25519 private seed (for deriving matching P2P QUIC endpoint identity).
+    pub fn ed25519_seed_bytes(&self) -> [u8; 32] {
+        self.signing_key.to_bytes()
+    }
+
     pub fn to_peer_public_key(&self) -> PeerPublicKey {
         PeerPublicKey {
             verifying_key: self.verifying_key,
@@ -334,6 +344,11 @@ impl PeerPublicKey {
 
     pub fn verifying_key(&self) -> &VerifyingKey {
         &self.verifying_key
+    }
+
+    /// Raw 32-byte Ed25519 public key (identical to the peer's Iroh P2P EndpointId).
+    pub fn ed25519_public_bytes(&self) -> [u8; 32] {
+        self.verifying_key.to_bytes()
     }
 
     /// Convert Ed25519 verifying key (Edwards) to X25519 public key (Montgomery).

@@ -95,31 +95,14 @@ pub struct SendResult {
     pub delivered_live: bool,
 }
 
-/// Connect once to a relay, authenticate with SSH Ed25519 challenge-response, and send an E2E encrypted message.
-pub async fn send_encrypted_message(
+/// Send an already-sealed `EncryptedEnvelope` via a mailbox relay WebSocket.
+/// Returns `Ok(true)` if delivered live, `Ok(false)` if queued on the relay for offline pickup.
+pub async fn send_sealed_envelope_via_relay(
     relay_url: &str,
     identity: &Identity,
-    contact: &Contact,
-    msg: AgentMessage,
-    store: Option<&Store>,
-) -> Result<SendResult> {
-    let total_att_bytes: usize = msg.attachments.iter().map(|a| a.content.len()).sum();
-    if total_att_bytes > MAX_ATTACHMENTS_BYTES {
-        bail!(
-            "Total attachments size ({total_att_bytes} bytes) exceeds limit ({MAX_ATTACHMENTS_BYTES} bytes)"
-        );
-    }
-    let peer_key = contact.peer_public_key()?;
-    let plaintext = serde_json::to_vec(&msg)?;
-    let envelope = seal_envelope(
-        identity,
-        &peer_key,
-        &msg.message_id,
-        msg.created_at.timestamp(),
-        &plaintext,
-    )?;
-
-    let url = normalize_relay_ws_url(contact.relay.as_deref().unwrap_or(relay_url));
+    envelope: EncryptedEnvelope,
+) -> Result<bool> {
+    let url = normalize_relay_ws_url(relay_url);
     let (mut ws, _) = timeout(Duration::from_secs(10), connect_async(&url))
         .await
         .with_context(|| format!("Timed out connecting to relay {url}"))?
@@ -154,6 +137,35 @@ pub async fn send_encrypted_message(
     };
 
     let _ = ws.close(None).await;
+    Ok(delivered_live)
+}
+
+/// Connect once to a relay, authenticate with SSH Ed25519 challenge-response, and send an E2E encrypted message.
+pub async fn send_encrypted_message(
+    relay_url: &str,
+    identity: &Identity,
+    contact: &Contact,
+    msg: AgentMessage,
+    store: Option<&Store>,
+) -> Result<SendResult> {
+    let total_att_bytes: usize = msg.attachments.iter().map(|a| a.content.len()).sum();
+    if total_att_bytes > MAX_ATTACHMENTS_BYTES {
+        bail!(
+            "Total attachments size ({total_att_bytes} bytes) exceeds limit ({MAX_ATTACHMENTS_BYTES} bytes)"
+        );
+    }
+    let peer_key = contact.peer_public_key()?;
+    let plaintext = serde_json::to_vec(&msg)?;
+    let envelope = seal_envelope(
+        identity,
+        &peer_key,
+        &msg.message_id,
+        msg.created_at.timestamp(),
+        &plaintext,
+    )?;
+
+    let target_relay = contact.relay.as_deref().unwrap_or(relay_url);
+    let delivered_live = send_sealed_envelope_via_relay(target_relay, identity, envelope).await?;
 
     if let Some(store) = store {
         let stored = StoredMessage {

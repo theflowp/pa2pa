@@ -4,9 +4,9 @@ mod setup_mcp;
 use anyhow::{anyhow, bail, Result};
 use clap::{Parser, Subcommand};
 use pa2pa_core::{
-    build_safe_agent_prompt, fetch_github_ed25519_keys, load_attachment_from_path,
-    pull_pending_messages, send_encrypted_message, Config, Contact, ContactStore, DaemonConfig,
-    ExecutionMode, Pa2paPaths, RunnerKind, Store, TrustLevel,
+    build_safe_agent_prompt, deliver_message, fetch_github_ed25519_keys, load_attachment_from_path,
+    local_endpoint_id, pull_pending_messages, Config, Contact, ContactStore, DaemonConfig,
+    ExecutionMode, Pa2paPaths, RunnerKind, Store, TransportMode, TrustLevel,
 };
 use pa2pa_crypto::{Identity, PeerPublicKey};
 use pa2pa_daemon::runners::{detect_installed_runners, run_agent_responder};
@@ -42,9 +42,12 @@ enum Commands {
         /// Human-friendly display name
         #[arg(long)]
         display_name: Option<String>,
-        /// Relay WebSocket URL (e.g. wss://relay.example.com/ws or ws://127.0.0.1:8787/ws)
-        #[arg(long, default_value = "ws://127.0.0.1:8787/ws")]
-        relay: String,
+        /// Optional mailbox relay WebSocket URL (omit for zero-server P2P mode!)
+        #[arg(long)]
+        relay: Option<String>,
+        /// Transport mode: hybrid (default: P2P direct + optional relay), p2p-only, relay-only
+        #[arg(long, default_value = "hybrid")]
+        transport: TransportMode,
         /// Explicit path to an existing Ed25519 OpenSSH private key
         #[arg(long)]
         ssh_key: Option<PathBuf>,
@@ -304,6 +307,7 @@ async fn main() -> Result<()> {
             name,
             display_name,
             relay,
+            transport,
             ssh_key,
             dedicated_key,
             runner,
@@ -315,6 +319,7 @@ async fn main() -> Result<()> {
                 name,
                 display_name,
                 relay,
+                transport,
                 ssh_key,
                 dedicated_key,
                 runner,
@@ -415,7 +420,8 @@ fn cmd_init(
     paths: &Pa2paPaths,
     name: Option<String>,
     display_name: Option<String>,
-    relay: String,
+    relay: Option<String>,
+    transport: TransportMode,
     ssh_key: Option<PathBuf>,
     dedicated_key: bool,
     runner: RunnerKind,
@@ -483,6 +489,7 @@ fn cmd_init(
         name: alias.clone(),
         display_name: display.clone(),
         relay_url: relay.clone(),
+        transport: transport.clone(),
         key_path: key_path.clone(),
         daemon: DaemonConfig {
             ui_bind,
@@ -491,7 +498,7 @@ fn cmd_init(
         },
     };
     cfg.save(paths)?;
-    let _ = Store::open(&paths.db_path())?;
+    let _ = Store::open_encrypted(&paths.db_path(), identity.clone())?;
 
     let invite = InvitePayload {
         name: cfg.name.clone(),
@@ -505,7 +512,16 @@ fn cmd_init(
     println!("  Home        : {}", paths.home.display());
     println!("  SSH key     : {}", key_path.display());
     println!("  Fingerprint : {}", identity.fingerprint());
-    println!("  Relay       : {}", cfg.relay_url);
+    if let Ok(ep_id) = local_endpoint_id(&identity) {
+        println!("  P2P ID      : {ep_id}");
+    }
+    println!("  Transport   : {}", cfg.transport);
+    println!(
+        "  Relay       : {}",
+        cfg.relay_url
+            .as_deref()
+            .unwrap_or("(none — zero-server P2P mode)")
+    );
     println!("\nShare this 1-line invite URI with trusted colleagues:");
     println!("  {invite}");
     Ok(())
@@ -524,7 +540,16 @@ fn cmd_whoami(paths: &Pa2paPaths) -> Result<()> {
     println!("Alias       : {}", cfg.name);
     println!("Display     : {}", cfg.display_name);
     println!("Fingerprint : {}", id.fingerprint());
-    println!("Relay       : {}", cfg.relay_url);
+    if let Ok(ep_id) = local_endpoint_id(&id) {
+        println!("P2P ID      : {ep_id}");
+    }
+    println!("Transport   : {}", cfg.transport);
+    println!(
+        "Relay       : {}",
+        cfg.relay_url
+            .as_deref()
+            .unwrap_or("(none — zero-server P2P)")
+    );
     println!("Dashboard   : http://{}", cfg.daemon.ui_bind);
     println!("Runner      : {}", cfg.daemon.default_runner);
     println!("SSH PubKey  : {}", id.openssh_public_key());
@@ -568,7 +593,7 @@ async fn cmd_contact(paths: &Pa2paPaths, action: ContactCmd) -> Result<()> {
                         alias.unwrap_or(inv.name),
                         display_name.or(inv.display_name),
                         inv.ssh_key,
-                        relay.or(Some(inv.relay)),
+                        relay.or(inv.relay),
                     )
                 } else if let Some(gh) = github {
                     let keys = fetch_github_ed25519_keys(&gh).await?;
@@ -650,7 +675,7 @@ async fn cmd_contact(paths: &Pa2paPaths, action: ContactCmd) -> Result<()> {
             let new_key = if let Some(uri) = invite {
                 let inv = InvitePayload::decode(&uri)?;
                 if c.relay.is_none() {
-                    c.relay = Some(inv.relay);
+                    c.relay = inv.relay;
                 }
                 inv.ssh_key
             } else if let Some(gh) = github {
@@ -714,26 +739,32 @@ async fn cmd_send(
         0,
     )
     .with_attachments(attachments);
-    let sent = send_encrypted_message(&cfg.relay_url, &id, &contact, msg, Some(&store)).await?;
+    let outcome = deliver_message(&cfg, &id, &contact, msg, &store, None).await?;
+    ping_local_daemon(paths, &cfg.daemon.ui_bind).await;
     println!(
-        "Sent E2E message {} -> @{} (thread: {}, delivered_live: {})",
-        sent.message.message_id, contact.alias, sent.message.thread_id, sent.delivered_live
+        "Sent E2E message {} -> @{} (thread: {}, via: {})",
+        outcome.message.message_id, contact.alias, outcome.message.thread_id, outcome.method
     );
+    println!("  {}", outcome.detail);
 
     if wait > 0 {
         println!("Waiting up to {wait}s for a reply...");
         let deadline = tokio::time::Instant::now() + Duration::from_secs(wait);
-        let sent_at = sent.message.created_at;
+        let sent_at = outcome.message.created_at;
         while tokio::time::Instant::now() < deadline {
-            let _ = pull_pending_messages(
-                &cfg.relay_url,
-                &id,
-                &contacts,
-                &store,
-                cfg.daemon.sync_allowlist_to_relay,
-            )
-            .await;
-            let msgs = store.list_thread_messages(&sent.message.thread_id)?;
+            if let Some(ref relay_url) = cfg.relay_url {
+                if cfg.transport.relay_enabled() {
+                    let _ = pull_pending_messages(
+                        relay_url,
+                        &id,
+                        &contacts,
+                        &store,
+                        cfg.daemon.sync_allowlist_to_relay,
+                    )
+                    .await;
+                }
+            }
+            let msgs = store.list_thread_messages(&outcome.message.thread_id)?;
             if let Some(reply) = msgs
                 .into_iter()
                 .rev()
@@ -755,21 +786,28 @@ async fn cmd_inbox(paths: &Pa2paPaths, all: bool, no_sync: bool) -> Result<()> {
     let contacts = ContactStore::new(paths);
     let store = Store::open_encrypted(&paths.db_path(), id.clone())?;
 
-    if !no_sync {
-        match pull_pending_messages(
-            &cfg.relay_url,
-            &id,
-            &contacts,
-            &store,
-            cfg.daemon.sync_allowlist_to_relay,
-        )
-        .await
-        {
-            Ok(pulled) if !pulled.is_empty() => {
-                println!("Synced {} new encrypted message(s) from relay.\n", pulled.len());
+    if !no_sync && cfg.transport.relay_enabled() {
+        if let Some(ref relay_url) = cfg.relay_url {
+            match pull_pending_messages(
+                relay_url,
+                &id,
+                &contacts,
+                &store,
+                cfg.daemon.sync_allowlist_to_relay,
+            )
+            .await
+            {
+                Ok(pulled) if !pulled.is_empty() => {
+                    println!(
+                        "Synced {} new encrypted message(s) from relay.\n",
+                        pulled.len()
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("Warning: could not sync relay ({e}); showing local inbox.")
+                }
             }
-            Ok(_) => {}
-            Err(e) => eprintln!("Warning: could not sync relay ({e}); showing local inbox."),
         }
     }
 
@@ -851,7 +889,7 @@ async fn cmd_reply(
     }
 
     let msg = AgentMessage::new_chat(
-        cfg.name,
+        cfg.name.clone(),
         Some("cli".into()),
         body,
         None,
@@ -860,11 +898,12 @@ async fn cmd_reply(
         0,
     )
     .with_attachments(attachments);
-    let sent = send_encrypted_message(&cfg.relay_url, &id, &contact, msg, Some(&store)).await?;
+    let outcome = deliver_message(&cfg, &id, &contact, msg, &store, None).await?;
     store.mark_thread_read(thread_id)?;
+    ping_local_daemon(paths, &cfg.daemon.ui_bind).await;
     println!(
-        "Replied to @{} (thread {}, delivered_live: {})",
-        contact.alias, thread_id, sent.delivered_live
+        "Replied to @{} (thread {}, via: {})",
+        contact.alias, thread_id, outcome.method
     );
     Ok(())
 }
@@ -943,7 +982,7 @@ async fn cmd_approve(
     };
 
     let msg = AgentMessage::new_chat(
-        cfg.name,
+        cfg.name.clone(),
         Some(if run_agent {
             cfg.daemon.default_runner.as_str().to_string()
         } else {
@@ -955,10 +994,14 @@ async fn cmd_approve(
         Some(approval.message_id.clone()),
         0,
     );
-    send_encrypted_message(&cfg.relay_url, &identity, &contact, msg, Some(&store)).await?;
+    let outcome = deliver_message(&cfg, &identity, &contact, msg, &store, None).await?;
     store.decide_approval(id, "approved", None)?;
     store.update_message_status(&approval.message_id, "replied")?;
-    println!("Approved #{id} and sent reply to @{}:", contact.alias);
+    ping_local_daemon(paths, &cfg.daemon.ui_bind).await;
+    println!(
+        "Approved #{id} and delivered reply to @{} (via {}):",
+        contact.alias, outcome.method
+    );
     println!("{reply_text}");
     Ok(())
 }
@@ -978,7 +1021,7 @@ async fn cmd_deny(
     if notify {
         if let Some(contact) = ContactStore::new(paths).get(&approval.peer_alias)? {
             let mut msg = AgentMessage::new_chat(
-                cfg.name,
+                cfg.name.clone(),
                 Some("human-denied".into()),
                 note.clone()
                     .unwrap_or_else(|| "Request declined by owner.".into()),
@@ -988,7 +1031,8 @@ async fn cmd_deny(
                 0,
             );
             msg.kind = MessageKind::Rejection;
-            send_encrypted_message(&cfg.relay_url, &identity, &contact, msg, Some(&store)).await?;
+            let _ = deliver_message(&cfg, &identity, &contact, msg, &store, None).await;
+            ping_local_daemon(paths, &cfg.daemon.ui_bind).await;
         }
     }
     store.decide_approval(id, "denied", note.as_deref())?;
@@ -1003,41 +1047,54 @@ async fn cmd_doctor(paths: &Pa2paPaths) -> Result<()> {
         Ok(cfg) => {
             println!("  [OK] Config loaded: @{} ({})", cfg.name, cfg.display_name);
             match Identity::load_openssh(&cfg.key_path) {
-                Ok(id) => println!("  [OK] SSH Ed25519 key: {}", id.fingerprint()),
+                Ok(id) => {
+                    println!("  [OK] SSH Ed25519 key: {}", id.fingerprint());
+                    if let Ok(ep_id) = local_endpoint_id(&id) {
+                        println!("  [OK] P2P EndpointId : {ep_id}");
+                    }
+                }
                 Err(e) => println!("  [ERR] SSH key invalid: {e}"),
             }
+            println!("  [OK] Transport mode : {}", cfg.transport);
             let contacts = ContactStore::new(paths).list().unwrap_or_default();
             println!("  [OK] Whitelisted contacts: {}", contacts.len());
 
-            if cfg.relay_url.starts_with("ws://")
-                && !cfg.relay_url.contains("127.0.0.1")
-                && !cfg.relay_url.contains("localhost")
-            {
-                println!(
-                    "  [WARN] Remote relay uses plaintext ws:// ({}) — use wss:// in production to protect metadata.",
-                    cfg.relay_url
-                );
-            }
-
-            let health_url = cfg
-                .relay_url
-                .replace("wss://", "https://")
-                .replace("ws://", "http://")
-                .trim_end_matches("/ws")
-                .to_string()
-                + "/health";
-            match reqwest::Client::builder()
-                .timeout(Duration::from_secs(4))
-                .build()?
-                .get(&health_url)
-                .send()
-                .await
-            {
-                Ok(r) if r.status().is_success() => {
-                    println!("  [OK] Relay reachable: {health_url}");
+            if let Some(ref relay_url) = cfg.relay_url {
+                if relay_url.starts_with("ws://")
+                    && !relay_url.contains("127.0.0.1")
+                    && !relay_url.contains("localhost")
+                {
+                    println!(
+                        "  [WARN] Remote relay uses plaintext ws:// ({relay_url}) — use wss:// in production to protect metadata."
+                    );
                 }
-                Ok(r) => println!("  [WARN] Relay returned HTTP {}: {health_url}", r.status()),
-                Err(e) => println!("  [WARN] Relay unreachable ({e}): {health_url}"),
+
+                let health_url = relay_url
+                    .replace("wss://", "https://")
+                    .replace("ws://", "http://")
+                    .trim_end_matches("/ws")
+                    .to_string()
+                    + "/health";
+                match reqwest::Client::builder()
+                    .timeout(Duration::from_secs(4))
+                    .build()?
+                    .get(&health_url)
+                    .send()
+                    .await
+                {
+                    Ok(r) if r.status().is_success() => {
+                        println!("  [OK] Optional relay reachable: {health_url}");
+                    }
+                    Ok(r) => println!(
+                        "  [WARN] Optional relay returned HTTP {}: {health_url}",
+                        r.status()
+                    ),
+                    Err(e) => println!(
+                        "  [WARN] Optional relay unreachable ({e}): {health_url} (P2P still works)"
+                    ),
+                }
+            } else {
+                println!("  [OK] Relay          : none (pure zero-server P2P mode)");
             }
         }
         Err(_) => {
@@ -1064,6 +1121,23 @@ async fn cmd_doctor(paths: &Pa2paPaths) -> Result<()> {
             .unwrap_or_else(|| "not found next to pa2pa or in PATH".into())
     );
     Ok(())
+}
+
+async fn ping_local_daemon(paths: &Pa2paPaths, ui_bind: &str) {
+    let Ok(token) = std::fs::read_to_string(paths.daemon_token_path()) else {
+        return;
+    };
+    let url = format!("http://{ui_bind}/api/internal/refresh");
+    if let Ok(c) = reqwest::Client::builder()
+        .timeout(Duration::from_millis(500))
+        .build()
+    {
+        let _ = c
+            .post(&url)
+            .header("X-Pa2pa-Token", token.trim())
+            .send()
+            .await;
+    }
 }
 
 pub(crate) fn find_pill_binary() -> Option<PathBuf> {

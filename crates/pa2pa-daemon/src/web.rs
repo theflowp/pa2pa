@@ -10,8 +10,8 @@ use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use futures_util::Stream;
 use pa2pa_core::{
-    build_safe_agent_prompt, fetch_github_ed25519_keys, send_encrypted_message, Config, Contact,
-    ContactStore, ExecutionMode, RunnerKind, Store, TrustLevel,
+    build_safe_agent_prompt, deliver_message, fetch_github_ed25519_keys, Config, Contact,
+    ContactStore, ExecutionMode, RunnerKind, Store, TransportMode, TrustLevel,
 };
 use pa2pa_crypto::Identity;
 use pa2pa_proto::{AgentMessage, Attachment, InvitePayload, MessageKind};
@@ -208,6 +208,7 @@ async fn sse_events(
 }
 
 async fn internal_refresh(State(state): State<Arc<DaemonState>>) -> impl IntoResponse {
+    state.outbox_notify.notify_one();
     state.emit(DaemonEvent::refresh("external_update"));
     Json(json!({ "ok": true }))
 }
@@ -250,6 +251,8 @@ async fn get_status(State(state): State<Arc<DaemonState>>) -> impl IntoResponse 
     let counts = Store::open_encrypted(&state.paths.db_path(), id.clone())
         .and_then(|s| s.counts())
         .unwrap_or_default();
+    let p2p_ready = state.p2p_ready.load(Ordering::Relaxed);
+    let p2p_endpoint_id = state.p2p_endpoint_id.read().await.clone();
     let relay_connected = state.relay_connected.load(Ordering::Relaxed);
     let relay_error = state.relay_error.read().await.clone();
 
@@ -260,6 +263,9 @@ async fn get_status(State(state): State<Arc<DaemonState>>) -> impl IntoResponse 
             "display_name": cfg.display_name,
             "fingerprint": id.fingerprint(),
             "ssh_public_key": id.openssh_public_key(),
+            "transport": cfg.transport,
+            "p2p_ready": p2p_ready,
+            "p2p_endpoint_id": p2p_endpoint_id,
             "relay_url": cfg.relay_url,
             "invite_uri": invite_uri,
             "ui_url": format!("http://{}", cfg.daemon.ui_bind),
@@ -270,6 +276,7 @@ async fn get_status(State(state): State<Arc<DaemonState>>) -> impl IntoResponse 
             "thinking_peers": thinking_peers,
             "unread_messages": counts.unread_messages,
             "pending_approvals": counts.pending_approvals,
+            "pending_outbox": counts.pending_outbox,
             "default_runner": cfg.daemon.default_runner,
             "os_sandbox": cfg.daemon.os_sandbox,
             "runners": detect_installed_runners(),
@@ -318,7 +325,7 @@ async fn create_contact(
                 body.alias.filter(|s| !s.trim().is_empty()).unwrap_or(inv.name),
                 body.display_name.or(inv.display_name),
                 inv.ssh_key,
-                body.relay.or(Some(inv.relay)),
+                body.relay.or(inv.relay),
             ),
             Err(e) => return api_err(StatusCode::BAD_REQUEST, format!("Invalid invite URI: {e}")),
         }
@@ -529,14 +536,18 @@ async fn send_message(
     )
     .with_attachments(body.attachments);
 
-    match send_encrypted_message(&cfg.relay_url, &id, &contact, msg, Some(&store)).await {
+    let warm_ep = state.p2p_endpoint.read().await.clone();
+    match deliver_message(&cfg, &id, &contact, msg, &store, warm_ep.as_ref()).await {
         Ok(res) => {
+            state.outbox_notify.notify_one();
             state.emit(DaemonEvent::refresh("message_sent"));
             (
                 StatusCode::OK,
                 Json(json!({
                     "sent": true,
-                    "delivered_live": res.delivered_live,
+                    "delivered_live": res.method.is_live(),
+                    "delivery_method": res.method,
+                    "detail": res.detail,
                     "message_id": res.message.message_id,
                     "thread_id": res.message.thread_id
                 })),
@@ -672,13 +683,16 @@ async fn approve_request(
         0,
     );
 
-    if let Err(e) = send_encrypted_message(&cfg.relay_url, &identity, &contact, msg, Some(&store)).await
+    let warm_ep = state.p2p_endpoint.read().await.clone();
+    let outcome = match deliver_message(&cfg, &identity, &contact, msg, &store, warm_ep.as_ref()).await
     {
-        return api_err(StatusCode::BAD_GATEWAY, format!("Failed to send reply: {e}"));
-    }
+        Ok(o) => o,
+        Err(e) => return api_err(StatusCode::BAD_GATEWAY, format!("Failed to send reply: {e}")),
+    };
 
     let _ = store.decide_approval(&id, "approved", body.note.as_deref());
     let _ = store.update_message_status(&approval.message_id, "replied");
+    state.outbox_notify.notify_one();
     state.emit(DaemonEvent::refresh("approval_approved"));
 
     (
@@ -686,6 +700,7 @@ async fn approve_request(
         Json(json!({
             "approved": true,
             "approval_id": id,
+            "delivery_method": outcome.method,
             "reply_sent": reply_text
         })),
     )
@@ -732,8 +747,9 @@ async fn deny_request(
                     0,
                 );
                 msg.kind = MessageKind::Rejection;
-                let _ = send_encrypted_message(&cfg.relay_url, &identity, &contact, msg, Some(&store))
-                    .await;
+                let warm_ep = state.p2p_endpoint.read().await.clone();
+                let _ = deliver_message(&cfg, &identity, &contact, msg, &store, warm_ep.as_ref()).await;
+                state.outbox_notify.notify_one();
             }
         }
     }
@@ -759,6 +775,7 @@ async fn get_config(State(state): State<Arc<DaemonState>>) -> impl IntoResponse 
 struct UpdateConfigBody {
     display_name: Option<String>,
     relay_url: Option<String>,
+    transport: Option<TransportMode>,
     default_runner: Option<RunnerKind>,
     default_workdir: Option<String>,
     notifications: Option<bool>,
@@ -777,7 +794,15 @@ async fn update_config(
         cfg.display_name = d;
     }
     if let Some(r) = body.relay_url {
-        cfg.relay_url = r;
+        let trimmed = r.trim();
+        cfg.relay_url = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
+    }
+    if let Some(t) = body.transport {
+        cfg.transport = t;
     }
     if let Some(runner) = body.default_runner {
         cfg.daemon.default_runner = runner;

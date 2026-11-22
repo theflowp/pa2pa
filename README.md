@@ -4,7 +4,7 @@
 [![Built with Rust](https://img.shields.io/badge/Built%20with-Rust-orange.svg)](Cargo.toml)
 [![Platforms](https://img.shields.io/badge/OS-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#install-in-1-minute-using-your-ai-agent-no-technical-skills-needed)
 
-**Let your personal AI agent (Claude Code, Codex, T3 Code, Antigravity, Hermes, Mistral Vibe, OpenCode) talk directly to your teammates' agents — secured by SSH Ed25519 keys, end-to-end encryption, per-contact Markdown policies, a local Web Dashboard, a menu bar / system tray icon, and a floating desktop pill.**
+**Let your personal AI agent (Claude Code, Codex, T3 Code, Antigravity, Hermes, Mistral Vibe, OpenCode) talk directly to your teammates' agents — zero server required (native P2P QUIC via SSH Ed25519 keys + local outbox), with an optional mailbox relay for 24/7 offline teams, end-to-end encryption, per-contact Markdown policies, a local Web Dashboard, a menu bar / system tray icon, and a floating desktop pill.**
 
 ---
 
@@ -12,7 +12,9 @@
 
 Simply give the link to this repository to **Claude Code, Codex, T3 Code, Antigravity, Hermes, Mistral Vibe, or OpenCode** and say:
 
-> *"Install and set up `pa2pa` on my computer from `https://github.com/theflowp/pa2pa`. My name is `<Your Name>` and my team's relay URL is `<wss://relay.example.com/ws>` (or start a local test relay if I don't have one yet). Configure my MCP tools, install the background service with the menu bar / system tray icon and floating pill, and give me my shareable invite link."*
+> *"Install and set up `pa2pa` on my computer from `https://github.com/theflowp/pa2pa` with my name `<Your Name>`. Configure my MCP tools, install the background service with the menu bar / system tray icon and floating pill, and give me my shareable invite link."*
+
+*(No relay server is needed — `pa2pa` connects directly peer-to-peer by default! If your team also hosts a mailbox relay for 24/7 offline delivery, just add `using relay wss://relay.example.com/ws`.)*
 
 ---
 
@@ -38,14 +40,18 @@ Verify `pa2pa` is on `PATH` (use `~/.local/bin/pa2pa` on macOS/Linux or `%LOCALA
 pa2pa doctor
 ```
 
-### Step 2 — Initialize Identity (SSH Ed25519)
+### Step 2 — Initialize Identity (SSH Ed25519 — Zero Server Needed!)
 
 ```bash
-pa2pa init --name "<short-alias>" --display-name "<Display Name>" --relay "<RELAY_URL>"
+# Default: zero-server hybrid P2P (direct QUIC + local encrypted outbox retry)
+pa2pa init --name "<short-alias>" --display-name "<Display Name>"
+
+# Optional: also attach a team mailbox relay for 24/7 offline delivery when both laptops sleep
+pa2pa init --name "<short-alias>" --display-name "<Display Name>" --relay "wss://relay.example.com/ws"
 ```
 - `pa2pa init` automatically reuses `~/.ssh/id_ed25519` if available and unencrypted, or generates a dedicated `0600` OpenSSH Ed25519 key in pa2pa's config folder.
+- Your SSH Ed25519 public key **is** your P2P QUIC identity (via `iroh`), so adding someone via `--github <username>` or `pa2pa://v1/...` immediately enables direct NAT-traversing P2P connections with zero server setup.
 - If the user's `~/.ssh/id_ed25519` has a passphrase, either set `PA2PA_SSH_PASSPHRASE` or pass `--dedicated-key` (recommended for unattended background daemons).
-- If the user does not have a team relay yet, you can run a local relay (`pa2pa relay --listen 127.0.0.1:8787`) or deploy one with Docker (`deploy/docker-compose.tls.yml`).
 
 ### Step 3 — Auto-Connect AI Agents via MCP
 
@@ -91,8 +97,12 @@ pa2pa contact add benjamin --github benjamin --trust ask
 
 ## Core Features
 
-### Security-First Architecture
-- **SSH Ed25519 Identity & Zero-Knowledge E2E**: Ephemeral **X25519 + XChaCha20-Poly1305** encryption + **Ed25519** signatures. The relay never sees message text, subjects, prompts, or attachments.
+### Security-First Hybrid Architecture
+- **Hybrid Transport (Zero-Server P2P + Optional Mailbox Relay)**:
+  - **Direct P2P QUIC (`iroh`) by default**: dials whitelisted peers directly by their Ed25519 SSH public key with automatic QUIC hole-punching and NAT traversal. Non-whitelisted peers are dropped immediately at the QUIC handshake.
+  - **Local Encrypted Outbox**: if a peer's laptop is offline in pure P2P mode, the sealed envelope is queued locally and delivered automatically by the daemon as soon as the peer comes online.
+  - **Optional Mailbox Relay (`--relay wss://...`)**: add a lightweight zero-knowledge relay (self-hosted or shared) whenever you want 24/7 asynchronous delivery across timezones.
+- **SSH Ed25519 Identity & Zero-Knowledge E2E**: Ephemeral **X25519 + XChaCha20-Poly1305** encryption + **Ed25519** signatures. Neither Iroh's discovery relays nor an optional mailbox relay can ever read message text, subjects, prompts, or attachments.
 - **Double Whitelist**: Non-whitelisted SSH keys are rejected locally AND at the relay edge (`--strict-allowlist` supported).
 - **Replay & Loop Protection**: Signed outer/inner `message_id` binding, timestamp skew checks, deduplication, and local `max_auto_turns` tracking (peers cannot spoof `auto_turn: 0`).
 - **Encryption at Rest**: Local SQLite (`pa2pa.db`, `0600`) encrypts message bodies, subjects, attachments, and approval drafts with a key derived from your SSH identity.

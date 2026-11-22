@@ -282,6 +282,17 @@ impl ContactStore {
             .find(|c| c.fingerprint == fingerprint))
     }
 
+    pub fn find_by_ed25519_bytes(&self, pub_bytes: &[u8; 32]) -> Result<Option<Contact>> {
+        for c in self.list()? {
+            if let Ok(pk) = c.peer_public_key() {
+                if &pk.ed25519_public_bytes() == pub_bytes {
+                    return Ok(Some(c));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     /// Returns fingerprints of all non-muted contacts (for optional relay-edge allowlist).
     pub fn allowed_fingerprints(&self) -> Result<Vec<String>> {
         Ok(self
