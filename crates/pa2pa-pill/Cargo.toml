@@ -20,6 +20,9 @@ tray-icon = "0.19"
 wry = { version = "0.47", features = ["transparent"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+core-foundation = "0.10"
+core-graphics = "0.24"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["NSColor", "NSPasteboard", "NSScreen"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["NSArray", "NSGeometry", "NSString", "NSValue", "objc2-core-foundation"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSColor", "NSPasteboard", "NSRunningApplication", "NSScreen", "NSWorkspace"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["block2", "NSArray", "NSGeometry", "NSNotification", "NSOperation", "NSString", "NSValue", "objc2-core-foundation"] }

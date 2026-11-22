@@ -3,6 +3,7 @@ use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use serde::Deserialize;
 use tao::dpi::{LogicalPosition, LogicalSize};
+use std::time::{Duration, Instant};
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::window::{Window, WindowBuilder};
@@ -267,6 +268,221 @@ fn pin_macos_webview_bottom_right(webview: &wry::WebView) {
     }
 }
 
+/// Slow fallback poll for fullscreen apps that don't switch Space (games, some video players).
+const FULLSCREEN_POLL: Duration = Duration::from_millis(2000);
+/// Re-checks after a Space / app switch notification: the fullscreen animation takes ~0.5-1s.
+const FULLSCREEN_RECHECKS_MS: [u64; 4] = [60, 300, 750, 1500];
+/// Tolerance (points) when comparing a window's bounds with its display's bounds.
+const COVER_TOLERANCE: f64 = 2.0;
+
+/// Axis-aligned rectangle in global top-left logical coordinates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Rect {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+impl Rect {
+    fn contains_point(&self, px: f64, py: f64) -> bool {
+        px >= self.x && px < self.x + self.w && py >= self.y && py < self.y + self.h
+    }
+
+    /// True when `self` covers the whole of `display` (menu bar area included), i.e. the window is
+    /// in native fullscreen, presentation mode, or an equivalent borderless fullscreen.
+    fn covers(&self, display: &Rect) -> bool {
+        self.x <= display.x + COVER_TOLERANCE
+            && self.y <= display.y + COVER_TOLERANCE
+            && self.x + self.w >= display.x + display.w - COVER_TOLERANCE
+            && self.y + self.h >= display.y + display.h - COVER_TOLERANCE
+    }
+}
+
+/// One on-screen window as reported by the window server.
+#[derive(Debug, Clone, Copy)]
+struct ScreenWindow {
+    owner_pid: i32,
+    layer: i64,
+    alpha: f64,
+    bounds: Rect,
+}
+
+/// Decide whether the frontmost app is fullscreen on `display`: one of its visible, normal-or-above
+/// layer windows covers the entire display. Our own windows never count.
+fn frontmost_is_fullscreen(
+    windows: &[ScreenWindow],
+    frontmost_pid: i32,
+    own_pid: i32,
+    display: &Rect,
+) -> bool {
+    if frontmost_pid <= 0 || frontmost_pid == own_pid {
+        return false;
+    }
+    windows.iter().any(|w| {
+        w.owner_pid == frontmost_pid && w.layer >= 0 && w.alpha > 0.01 && w.bounds.covers(display)
+    })
+}
+
+/// macOS: is the app in front fullscreen on the display that holds the pill?
+#[cfg(target_os = "macos")]
+fn macos_fullscreen_active(window: &Window) -> bool {
+    use objc2::msg_send;
+    use objc2_app_kit::{NSScreen, NSWorkspace};
+    use objc2_foundation::MainThreadMarker;
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        return false;
+    };
+
+    // Frontmost application pid.
+    let frontmost_pid: i32 = match NSWorkspace::sharedWorkspace().frontmostApplication() {
+        Some(app) => unsafe { msg_send![&*app, processIdentifier] },
+        None => return false,
+    };
+
+    // Display (full frame, menu bar included) that holds the pill's center.
+    let screens = NSScreen::screens(mtm);
+    if screens.is_empty() {
+        return false;
+    }
+    let primary_h = screens.objectAtIndex(0).frame().size.height;
+    let (wx, wy, ww, wh) = get_window_rect_logical(window, COMPACT_W, COMPACT_H);
+    let (cx, cy) = (wx + ww / 2.0, wy + wh / 2.0);
+    let mut display = None;
+    for i in 0..screens.count() {
+        let f = screens.objectAtIndex(i).frame();
+        let r = Rect {
+            x: f.origin.x,
+            y: primary_h - (f.origin.y + f.size.height),
+            w: f.size.width,
+            h: f.size.height,
+        };
+        if r.contains_point(cx, cy) {
+            display = Some(r);
+            break;
+        }
+    }
+    let Some(display) = display else {
+        return false;
+    };
+
+    let windows = macos_onscreen_windows();
+    let fs = frontmost_is_fullscreen(&windows, frontmost_pid, std::process::id() as i32, &display);
+    if std::env::var_os("PA2PA_PILL_DEBUG_FULLSCREEN").is_some() {
+        eprintln!(
+            "[pa2pa-pill] fullscreen check: frontmost_pid={frontmost_pid} display={display:?} windows={} -> {fs}",
+            windows.len()
+        );
+    }
+    fs
+}
+
+/// Visible windows from the window server (pid / layer / alpha / bounds need no Screen Recording
+/// permission; only window titles would).
+#[cfg(target_os = "macos")]
+fn macos_onscreen_windows() -> Vec<ScreenWindow> {
+    use core_foundation::base::{CFType, TCFType};
+    use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
+    use core_foundation::number::CFNumber;
+    use core_foundation::string::CFString;
+    use core_graphics::geometry::CGRect;
+    use core_graphics::window::{
+        copy_window_info, kCGNullWindowID, kCGWindowAlpha, kCGWindowBounds, kCGWindowLayer,
+        kCGWindowListExcludeDesktopElements, kCGWindowListOptionOnScreenOnly, kCGWindowOwnerPID,
+    };
+
+    // On-screen windows (no Screen Recording permission needed for pid / layer / bounds / alpha).
+    let Some(list) = copy_window_info(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+        kCGNullWindowID,
+    ) else {
+        return Vec::new();
+    };
+    let (k_pid, k_layer, k_alpha, k_bounds) = unsafe {
+        (
+            CFString::wrap_under_get_rule(kCGWindowOwnerPID),
+            CFString::wrap_under_get_rule(kCGWindowLayer),
+            CFString::wrap_under_get_rule(kCGWindowAlpha),
+            CFString::wrap_under_get_rule(kCGWindowBounds),
+        )
+    };
+    let number = |d: &CFDictionary<CFString, CFType>, k: &CFString| -> Option<f64> {
+        d.find(k)?.downcast::<CFNumber>()?.to_f64()
+    };
+
+    let mut windows = Vec::new();
+    for item in list.iter() {
+        let raw = *item as CFDictionaryRef;
+        if raw.is_null() {
+            continue;
+        }
+        let dict: CFDictionary<CFString, CFType> = unsafe { CFDictionary::wrap_under_get_rule(raw) };
+        let (Some(pid), Some(layer)) = (number(&dict, &k_pid), number(&dict, &k_layer)) else {
+            continue;
+        };
+        let alpha = number(&dict, &k_alpha).unwrap_or(1.0);
+        let Some(bounds_ref) = dict.find(&k_bounds) else {
+            continue;
+        };
+        let bounds_dict: CFDictionary =
+            unsafe { CFDictionary::wrap_under_get_rule(bounds_ref.as_CFTypeRef() as CFDictionaryRef) };
+        let Some(b) = CGRect::from_dict_representation(&bounds_dict) else {
+            continue;
+        };
+        windows.push(ScreenWindow {
+            owner_pid: pid as i32,
+            layer: layer as i64,
+            alpha,
+            bounds: Rect {
+                x: b.origin.x,
+                y: b.origin.y,
+                w: b.size.width,
+                h: b.size.height,
+            },
+        });
+    }
+    windows
+}
+
+/// Subscribe to Space and frontmost-app changes so fullscreen transitions are caught instantly.
+/// The returned observer tokens must stay alive for the lifetime of the event loop.
+#[cfg(target_os = "macos")]
+fn macos_observe_fullscreen_triggers(
+    proxy: tao::event_loop::EventLoopProxy<AppEvent>,
+) -> Vec<objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2::runtime::NSObjectProtocol>>> {
+    use block2::RcBlock;
+    use objc2_app_kit::{
+        NSWorkspace, NSWorkspaceActiveSpaceDidChangeNotification,
+        NSWorkspaceDidActivateApplicationNotification,
+    };
+    use objc2_foundation::NSNotification;
+    use std::ptr::NonNull;
+
+    let center = NSWorkspace::sharedWorkspace().notificationCenter();
+    let names = unsafe {
+        [
+            NSWorkspaceActiveSpaceDidChangeNotification,
+            NSWorkspaceDidActivateApplicationNotification,
+        ]
+    };
+    names
+        .into_iter()
+        .map(|name| {
+            let proxy = proxy.clone();
+            let block = RcBlock::new(move |_n: NonNull<NSNotification>| {
+                let _ = proxy.send_event(AppEvent::FullscreenTrigger);
+            });
+            unsafe { center.addObserverForName_object_queue_usingBlock(Some(name), None, None, &block) }
+        })
+        .collect()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_fullscreen_active(_window: &Window) -> bool {
+    false
+}
+
 /// Max length accepted for an IPC clipboard copy (an invite URI is a few hundred bytes).
 const MAX_COPY_LEN: usize = 8 * 1024;
 
@@ -343,6 +559,9 @@ enum AppEvent {
     Ipc(PillIpc),
     Menu(MenuEvent),
     HotKey(GlobalHotKeyEvent),
+    /// A Space or frontmost-app change happened: re-evaluate fullscreen state soon.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    FullscreenTrigger,
 }
 
 /// Programmatically render a crisp 32x32 RGBA tray/menu-bar icon with live status dot.
@@ -457,6 +676,8 @@ fn main() -> anyhow::Result<()> {
     let ipc_proxy = event_loop.create_proxy();
     let menu_proxy = event_loop.create_proxy();
     let hotkey_proxy = event_loop.create_proxy();
+    #[cfg(target_os = "macos")]
+    let _fullscreen_observers = macos_observe_fullscreen_triggers(event_loop.create_proxy());
 
     // Forward tray menu & global hotkey events directly into tao's event loop
     MenuEvent::set_event_handler(Some(move |ev| {
@@ -554,13 +775,60 @@ fn main() -> anyhow::Result<()> {
     let mut is_expanded = false;
     let mut cur_w = COMPACT_W;
     let mut cur_h = COMPACT_H;
+    // `is_visible` is the user's intent (hotkey / tray menu / auto-surface on approval). The window is
+    // actually shown only when that intent holds AND no app is fullscreen on the pill's display,
+    // unless the user explicitly summoned the pill while in fullscreen (`fs_override`).
     let mut is_visible = !args.start_hidden;
+    let mut fs_active = false;
+    let mut fs_override = false;
+    let mut shown = is_visible;
+    let mut next_fs_poll = Instant::now();
+    let mut fs_rechecks: Vec<Instant> = Vec::new();
     let mut current_visual = TrayVisual::Offline;
 
+    fn sync_visibility(window: &Window, want: bool, shown: &mut bool) {
+        if want != *shown {
+            window.set_visible(want);
+            *shown = want;
+        }
+    }
+
     event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::Wait;
         // Keep tray_icon & hotkey_manager alive for the lifetime of the event loop
         let _keep_hotkey = &hotkey_manager;
+
+        // Fullscreen auto-hide (macOS): notification-driven re-checks + slow fallback poll.
+        if cfg!(target_os = "macos") && is_visible {
+            let now = Instant::now();
+            if now >= next_fs_poll || fs_rechecks.iter().any(|t| now >= *t) {
+                fs_rechecks.retain(|t| *t > now);
+                next_fs_poll = now + FULLSCREEN_POLL;
+                let fs = macos_fullscreen_active(&window);
+                if fs != fs_active {
+                    fs_active = fs;
+                    fs_override = false;
+                }
+                sync_visibility(&window, !fs_active || fs_override, &mut shown);
+            }
+            let next = fs_rechecks.iter().copied().fold(next_fs_poll, Instant::min);
+            *control_flow = ControlFlow::WaitUntil(next);
+        } else {
+            *control_flow = ControlFlow::Wait;
+        }
+
+        // Hotkey / tray "Show / Hide": hide if shown, otherwise show (even over a fullscreen app).
+        let toggle = |is_visible: &mut bool, fs_active: &mut bool, fs_override: &mut bool, shown: &mut bool| {
+            if *shown {
+                *is_visible = false;
+                *fs_override = false;
+                sync_visibility(&window, false, shown);
+            } else {
+                *is_visible = true;
+                *fs_active = macos_fullscreen_active(&window);
+                *fs_override = *fs_active;
+                sync_visibility(&window, true, shown);
+            }
+        };
 
         match event {
             Event::WindowEvent {
@@ -569,23 +837,32 @@ fn main() -> anyhow::Result<()> {
             } => {
                 // Hide to tray instead of quitting abruptly
                 is_visible = false;
-                window.set_visible(false);
+                fs_override = false;
+                sync_visibility(&window, false, &mut shown);
+            }
+            Event::UserEvent(AppEvent::FullscreenTrigger) => {
+                let now = Instant::now();
+                fs_rechecks = FULLSCREEN_RECHECKS_MS
+                    .iter()
+                    .map(|ms| now + Duration::from_millis(*ms))
+                    .collect();
+                if is_visible {
+                    let next = fs_rechecks.iter().copied().fold(next_fs_poll, Instant::min);
+                    *control_flow = ControlFlow::WaitUntil(next);
+                }
             }
             Event::UserEvent(AppEvent::HotKey(hk)) => {
                 if hk.id == toggle_hotkey_id && hk.state == HotKeyState::Pressed {
-                    is_visible = !is_visible;
-                    window.set_visible(is_visible);
+                    toggle(&mut is_visible, &mut fs_active, &mut fs_override, &mut shown);
                 }
             }
             Event::UserEvent(AppEvent::Menu(ev)) => {
                 if ev.id == toggle_id {
-                    is_visible = !is_visible;
-                    window.set_visible(is_visible);
+                    toggle(&mut is_visible, &mut fs_active, &mut fs_override, &mut shown);
                 } else if ev.id == reset_pos_id {
                     position_window_bottom_right(&window, cur_w, cur_h);
-                    if !is_visible {
-                        is_visible = true;
-                        window.set_visible(true);
+                    if !shown {
+                        toggle(&mut is_visible, &mut fs_active, &mut fs_override, &mut shown);
                     }
                 } else if ev.id == dashboard_id {
                     let _ = open::that(&base_url);
@@ -622,10 +899,14 @@ fn main() -> anyhow::Result<()> {
                         TrayVisual::Offline
                     };
 
-                    // Auto-surface the pill if hidden and an approval arrives
+                    // Auto-surface the pill if hidden and an approval arrives, but never over a
+                    // fullscreen app: the tray icon turns amber and the pill appears on exit.
                     if pending_approvals > 0 && !is_visible {
                         is_visible = true;
-                        window.set_visible(true);
+                        fs_active = macos_fullscreen_active(&window);
+                        fs_override = false;
+                        sync_visibility(&window, !fs_active, &mut shown);
+                        next_fs_poll = Instant::now() + FULLSCREEN_POLL;
                     }
 
                     let summary = if pending_approvals > 0 {
@@ -704,6 +985,54 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn win(pid: i32, layer: i64, x: f64, y: f64, w: f64, h: f64) -> ScreenWindow {
+        ScreenWindow { owner_pid: pid, layer, alpha: 1.0, bounds: Rect { x, y, w, h } }
+    }
+
+    #[test]
+    fn fullscreen_detected_only_for_frontmost_window_covering_whole_display() {
+        let display = Rect { x: 0.0, y: 0.0, w: 1512.0, h: 982.0 };
+        let own = 100;
+        // Native fullscreen / YouTube fullscreen: frontmost app's window covers the entire display.
+        let fs = [win(42, 0, 0.0, 0.0, 1512.0, 982.0)];
+        assert!(frontmost_is_fullscreen(&fs, 42, own, &display));
+        // Same window but another app is frontmost -> not ours to judge.
+        assert!(!frontmost_is_fullscreen(&fs, 7, own, &display));
+        // Zoomed (maximized) window below the menu bar and above the Dock -> not fullscreen.
+        let zoomed = [win(42, 0, 0.0, 38.0, 1512.0, 862.0)];
+        assert!(!frontmost_is_fullscreen(&zoomed, 42, own, &display));
+        // Desktop-level / negative-layer windows and invisible overlays never count.
+        let desktop = [win(42, -2147483603, 0.0, 0.0, 1512.0, 982.0)];
+        assert!(!frontmost_is_fullscreen(&desktop, 42, own, &display));
+        let mut ghost = win(42, 0, 0.0, 0.0, 1512.0, 982.0);
+        ghost.alpha = 0.0;
+        assert!(!frontmost_is_fullscreen(&[ghost], 42, own, &display));
+        // Our own pill windows are ignored.
+        let mine = [win(own, 3, 0.0, 0.0, 1512.0, 982.0)];
+        assert!(!frontmost_is_fullscreen(&mine, own, own, &display));
+    }
+
+    #[test]
+    fn fullscreen_on_secondary_display_does_not_hide_pill_on_primary() {
+        let primary = Rect { x: 0.0, y: 0.0, w: 1512.0, h: 982.0 };
+        let external = [win(42, 0, 1512.0, -200.0, 2560.0, 1440.0)];
+        assert!(!frontmost_is_fullscreen(&external, 42, 100, &primary));
+        let ext_display = Rect { x: 1512.0, y: -200.0, w: 2560.0, h: 1440.0 };
+        assert!(frontmost_is_fullscreen(&external, 42, 100, &ext_display));
+    }
+
+    /// Diagnostic: `cargo test -p pa2pa-pill -- --ignored --nocapture dump_onscreen_windows`
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore]
+    fn dump_onscreen_windows() {
+        let windows = macos_onscreen_windows();
+        for w in &windows {
+            println!("{w:?}");
+        }
+        assert!(!windows.is_empty(), "window server returned no on-screen windows");
+    }
 
     #[test]
     fn macos_bottom_dock_places_pill_bottom_right_above_dock() {
