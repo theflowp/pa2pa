@@ -233,7 +233,9 @@
       min-height: 44px;
       max-height: 44px;
       min-width: 248px;
-      max-width: 100%;
+      /* Compact NSWindow is 300px wide (minus 2px shell padding each side): the pill keeps the exact
+         same width collapsed and expanded, since the macOS WebView is pinned at the expanded size. */
+      max-width: min(100%, 296px);
       padding: 0 8px 0 14px;
       border-radius: 999px;
       transform: translateZ(0);
@@ -412,9 +414,9 @@
         wrap.classList.remove('closing', 'open');
         wrap.classList.add('mounted');
 
-        // Size NSWindow ONCE with ample headroom (extra transparent pixels above the card are invisible),
-        // let WKWebView settle its backing surface for 35ms while card is invisible, then play the
-        // uninterrupted spring entrance animation at full 60/120fps.
+        // Grow the NSWindow ONCE with ample headroom. On macOS the WebView is pinned at its expanded
+        // size, so this only reveals already-rendered pixels (no relayout, no blink). A short delay lets
+        // the native resize land before the uninterrupted spring entrance animation starts.
         const targetH = pendingApprovals.length > 0
           ? Math.max(measureExpandedHeight(), 360)
           : Math.max(measureExpandedHeight(), 164);
@@ -426,7 +428,7 @@
             if (gen !== animGen || !expanded) return;
             wrap.classList.add('open');
           });
-        }, 35);
+        }, 16);
       } else {
         // Play the full smooth collapse transition first, then shrink NSWindow atomically.
         wrap.classList.remove('open');

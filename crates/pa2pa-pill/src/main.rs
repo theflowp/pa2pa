@@ -230,6 +230,43 @@ fn enforce_macos_true_transparency(window: &Window, webview: &wry::WebView) {
     }
 }
 
+/// Give the WKWebView a fixed EXPANDED_W x EXPANDED_H frame pinned to the bottom-right corner of
+/// the window's content view. Expanding/collapsing the NSWindow then only changes how much of the
+/// (already rendered) page is revealed: WebKit never re-lays out or repaints asynchronously during a
+/// resize, which eliminates the one-frame blink of the card and pill on open/close.
+#[cfg(target_os = "macos")]
+fn pin_macos_webview_bottom_right(webview: &wry::WebView) {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyObject, Bool};
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+    use wry::WebViewExtMacOS;
+
+    // NSViewMinXMargin (1) | NSViewMaxYMargin (32) in a non-flipped parent, or
+    // NSViewMinXMargin (1) | NSViewMinYMargin (8) in a flipped one: flexible left & top margins.
+    unsafe {
+        let wk = webview.webview();
+        let wk_ptr: *mut AnyObject = &*wk as *const _ as *mut AnyObject;
+        if wk_ptr.is_null() {
+            return;
+        }
+        let parent: *mut AnyObject = msg_send![wk_ptr, superview];
+        if parent.is_null() {
+            return;
+        }
+        let bounds: NSRect = msg_send![parent, bounds];
+        let flipped: Bool = msg_send![parent, isFlipped];
+        let x = bounds.size.width - EXPANDED_W;
+        let (y, mask): (f64, usize) = if flipped.as_bool() {
+            (bounds.size.height - EXPANDED_H, 1 | 8)
+        } else {
+            (0.0, 1 | 32)
+        };
+        let _: () = msg_send![wk_ptr, setAutoresizingMask: mask];
+        let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(EXPANDED_W, EXPANDED_H));
+        let _: () = msg_send![wk_ptr, setFrame: frame];
+    }
+}
+
 fn position_window_bottom_right(window: &Window, win_w: f64, win_h: f64) {
     if let Some(area) = current_work_area(window) {
         let (x, y) = area.bottom_right_position(win_w, win_h);
@@ -487,6 +524,8 @@ fn main() -> anyhow::Result<()> {
 
     #[cfg(target_os = "macos")]
     enforce_macos_true_transparency(&window, &webview);
+    #[cfg(target_os = "macos")]
+    pin_macos_webview_bottom_right(&webview);
 
     let mut is_expanded = false;
     let mut cur_w = COMPACT_W;
@@ -619,6 +658,9 @@ fn main() -> anyhow::Result<()> {
                     };
 
                     set_window_rect_atomic(&window, new_x, new_y, new_w, new_h);
+                    // Autoresizing already keeps it anchored; re-pin as a cheap safety net.
+                    #[cfg(target_os = "macos")]
+                    pin_macos_webview_bottom_right(&webview);
                     is_expanded = expanded;
                     cur_w = new_w;
                     cur_h = new_h;
