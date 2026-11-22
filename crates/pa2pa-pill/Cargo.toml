@@ -1,0 +1,20 @@
+[package]
+name = "pa2pa-pill"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "pa2pa-pill"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+global-hotkey = "0.6"
+open.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tao = "0.30"
+tray-icon = "0.19"
+wry = "0.47"

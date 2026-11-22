@@ -1,0 +1,860 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!--PA2PA_TOKEN_META-->
+  <title>pa2pa — Agent Control Plane</title>
+  <style>
+    :root {
+      --bg: #0b0d12;
+      --panel: #131722;
+      --panel-2: #191f2e;
+      --border: #252d40;
+      --text: #e8edf7;
+      --muted: #8c98b3;
+      --accent: #6c8cff;
+      --accent-soft: rgba(108, 140, 255, 0.14);
+      --green: #34d399;
+      --green-soft: rgba(52, 211, 153, 0.14);
+      --amber: #fbbf24;
+      --amber-soft: rgba(251, 191, 36, 0.16);
+      --red: #f87171;
+      --red-soft: rgba(248, 113, 113, 0.14);
+      --radius: 12px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 24px;
+      background: rgba(11, 13, 18, 0.88);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .logo {
+      width: 32px;
+      height: 32px;
+      border-radius: 9px;
+      background: linear-gradient(135deg, #6c8cff, #a78bfa);
+      display: grid;
+      place-items: center;
+      font-weight: 800;
+      font-size: 13px;
+      color: #0b0d12;
+      letter-spacing: -0.5px;
+    }
+    .brand h1 { margin: 0; font-size: 16px; font-weight: 700; }
+    .brand .sub { font-size: 12px; color: var(--muted); font-family: var(--mono); }
+    .status-strip { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--text);
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+    .dot.ok { background: var(--green); box-shadow: 0 0 8px var(--green); }
+    .dot.warn { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
+    .dot.err { background: var(--red); }
+
+    nav {
+      display: flex;
+      gap: 6px;
+      padding: 12px 24px 0;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg);
+    }
+    nav button {
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      padding: 10px 14px;
+      font-weight: 600;
+      font-size: 13px;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    nav button.active { color: var(--text); border-bottom-color: var(--accent); }
+    nav button .pill-count {
+      background: var(--amber-soft);
+      color: var(--amber);
+      border-radius: 999px;
+      padding: 1px 7px;
+      font-size: 11px;
+    }
+
+    main { max-width: 1180px; margin: 0 auto; padding: 24px; }
+    .tab { display: none; }
+    .tab.active { display: block; }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px;
+      margin-bottom: 16px;
+    }
+    .card h2, .card h3 { margin: 0 0 10px; font-size: 15px; }
+    .muted { color: var(--muted); }
+    .mono { font-family: var(--mono); font-size: 12px; }
+    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .between { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+    .split { display: grid; grid-template-columns: 320px 1fr; gap: 16px; }
+    @media (max-width: 820px) { .split { grid-template-columns: 1fr; } }
+
+    input, select, textarea {
+      width: 100%;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      padding: 9px 11px;
+      font-family: inherit;
+      font-size: 13px;
+    }
+    textarea { min-height: 88px; resize: vertical; }
+    label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; font-weight: 600; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      border-radius: 8px;
+      padding: 8px 13px;
+      font-size: 13px;
+      font-weight: 600;
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .btn:hover { filter: brightness(1.12); }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: #090d16; }
+    .btn.good { background: var(--green-soft); border-color: rgba(52,211,153,0.4); color: var(--green); }
+    .btn.warn { background: var(--amber-soft); border-color: rgba(251,191,36,0.4); color: var(--amber); }
+    .btn.danger { background: var(--red-soft); border-color: rgba(248,113,113,0.4); color: var(--red); }
+    .btn.sm { padding: 5px 10px; font-size: 12px; }
+
+    .trust-tag {
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+    .trust-ask { background: var(--amber-soft); color: var(--amber); }
+    .trust-auto-read { background: var(--accent-soft); color: var(--accent); }
+    .trust-auto-exec { background: var(--green-soft); color: var(--green); }
+    .trust-muted { background: var(--red-soft); color: var(--red); }
+
+    .thread-item {
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      background: var(--panel-2);
+    }
+    .thread-item.selected { border-color: var(--accent); background: var(--accent-soft); }
+    .msg-bubble {
+      padding: 11px 14px;
+      border-radius: 11px;
+      margin-bottom: 10px;
+      max-width: 86%;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .msg-in { background: var(--panel-2); border: 1px solid var(--border); margin-right: auto; }
+    .msg-out { background: var(--accent-soft); border: 1px solid rgba(108,140,255,0.35); margin-left: auto; }
+    .msg-meta { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+
+    .quote-box {
+      background: var(--panel-2);
+      border-left: 3px solid var(--amber);
+      padding: 10px 12px;
+      border-radius: 6px;
+      margin: 10px 0;
+      white-space: pre-wrap;
+    }
+    pre {
+      background: #080a0f;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      overflow-x: auto;
+      font-family: var(--mono);
+      font-size: 12px;
+      margin: 8px 0;
+    }
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: var(--panel-2);
+      border: 1px solid var(--accent);
+      color: var(--text);
+      padding: 10px 14px;
+      border-radius: 10px;
+      font-size: 13px;
+      display: none;
+      z-index: 99;
+      box-shadow: 0 12px 30px rgba(0,0,0,0.45);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <div class="logo">p2p</div>
+      <div>
+        <h1 id="identity-title">pa2pa</h1>
+        <div class="sub" id="identity-fp">Loading SSH identity...</div>
+      </div>
+    </div>
+    <div class="status-strip">
+      <span class="badge"><span id="relay-dot" class="dot"></span><span id="relay-label">Connecting...</span></span>
+      <span class="badge">Runner: <strong id="runner-label">—</strong></span>
+      <button class="btn sm primary" onclick="copyInvite()">Copy Invite URI</button>
+    </div>
+  </header>
+
+  <nav>
+    <button class="active" data-tab="approvals" onclick="switchTab('approvals')">
+      Approvals <span id="nav-approvals-count" class="pill-count" style="display:none">0</span>
+    </button>
+    <button data-tab="threads" onclick="switchTab('threads')">
+      Inbox &amp; Threads <span id="nav-unread-count" class="pill-count" style="display:none">0</span>
+    </button>
+    <button data-tab="contacts" onclick="switchTab('contacts')">Contacts &amp; SSH Keys</button>
+    <button data-tab="setup" onclick="switchTab('setup')">Runners &amp; MCP Setup</button>
+  </nav>
+
+  <main>
+    <!-- APPROVALS TAB -->
+    <section id="tab-approvals" class="tab active">
+      <div class="between" style="margin-bottom:14px">
+        <div>
+          <h2 style="margin:0">Pending Human Approvals</h2>
+          <div class="muted">Requests from whitelisted peer agents that require your confirmation.</div>
+        </div>
+        <button class="btn sm" onclick="refreshAll()">Refresh</button>
+      </div>
+      <div id="approvals-list"></div>
+    </section>
+
+    <!-- THREADS TAB -->
+    <section id="tab-threads" class="tab">
+      <div class="split">
+        <div>
+          <div class="card">
+            <h3>New Encrypted Message</h3>
+            <label>Contact</label>
+            <select id="send-to"></select>
+            <label>Subject (optional)</label>
+            <input id="send-subject" placeholder="Quick question about API..." />
+            <label>Message</label>
+            <textarea id="send-body" placeholder="Ask their agent something..."></textarea>
+            <div style="margin-top:10px">
+              <button class="btn primary" onclick="sendNewMessage()">Send E2E Message</button>
+            </div>
+          </div>
+          <div id="threads-list"></div>
+        </div>
+        <div class="card" id="thread-detail">
+          <div class="muted">Select a thread on the left to inspect encrypted agent messages and reply.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- CONTACTS TAB -->
+    <section id="tab-contacts" class="tab">
+      <div class="grid-2">
+        <div class="card">
+          <h2 id="contact-form-title">Whitelist a Contact</h2>
+          <div class="muted">Add a colleague via a <code>pa2pa://</code> invite URI, GitHub username, or OpenSSH Ed25519 key.</div>
+          <label>Invite URI (pa2pa://v1/...)</label>
+          <input id="c-invite" placeholder="pa2pa://v1/..." />
+          <label>— or GitHub username (imports ssh-ed25519 keys)</label>
+          <input id="c-github" placeholder="benjamin" />
+          <label>— or Alias &amp; Raw OpenSSH Public Key</label>
+          <div class="row">
+            <input id="c-alias" placeholder="alias (e.g. benjamin)" style="flex:1" />
+            <input id="c-display" placeholder="Display Name (optional)" style="flex:1" />
+          </div>
+          <input id="c-ssh-key" placeholder="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA..." style="margin-top:8px" />
+
+          <div class="row" style="margin-top:8px">
+            <div style="flex:1">
+              <label>Trust Level</label>
+              <select id="c-trust">
+                <option value="ask">ask (require approval)</option>
+                <option value="auto-read">auto-read (auto-reply read-only)</option>
+                <option value="auto-exec">auto-exec (scoped execution)</option>
+                <option value="muted">muted (ignore)</option>
+              </select>
+            </div>
+            <div style="flex:1">
+              <label>Runner Override</label>
+              <select id="c-runner">
+                <option value="">(default runner)</option>
+                <option value="claude">Claude Code</option>
+                <option value="codex">Codex CLI</option>
+                <option value="hermes">Hermes Agent</option>
+                <option value="antigravity">Antigravity (agy)</option>
+                <option value="t3">T3 Code</option>
+                <option value="vibe">Mistral Vibe</option>
+                <option value="opencode">OpenCode</option>
+                <option value="custom">Custom</option>
+                <option value="none">Disabled</option>
+              </select>
+            </div>
+          </div>
+
+          <label>Allowed Paths (comma-separated, e.g. ~/projects/app)</label>
+          <input id="c-paths" placeholder="~/projects/mon-app" />
+          <label>Always Require Approval For (comma-separated)</label>
+          <input id="c-approval-for" value="write, shell, git_push, secrets" />
+          <label>Owner Prompt &amp; Description (who is this person &amp; what may your agent do?)</label>
+          <textarea id="c-prompt" placeholder="Benjamin is a trusted senior engineer on my team. Answer questions about our architecture and code. Never share .env files or execute destructive commands without asking me."></textarea>
+
+          <div class="row" style="margin-top:12px">
+            <button class="btn primary" onclick="saveContact()">Save Contact</button>
+            <button class="btn" onclick="resetContactForm()">Clear</button>
+          </div>
+        </div>
+
+        <div>
+          <h2 style="margin-top:0">Whitelisted Contacts</h2>
+          <div id="contacts-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- RUNNERS & SETUP TAB -->
+    <section id="tab-setup" class="tab">
+      <div class="grid-2">
+        <div class="card">
+          <h2>Default Auto-Responder Runner</h2>
+          <div class="muted">Used by the daemon when a contact has <code>auto-read</code> or <code>auto-exec</code>, or when you click <strong>Approve &amp; Run Agent</strong>.</div>
+          <label>Active Runner</label>
+          <select id="cfg-runner">
+            <option value="claude">Claude Code (claude)</option>
+            <option value="codex">Codex CLI (codex)</option>
+            <option value="hermes">Hermes Agent (hermes)</option>
+            <option value="antigravity">Antigravity (agy)</option>
+            <option value="t3">T3 Code (t3)</option>
+            <option value="vibe">Mistral Vibe (vibe)</option>
+            <option value="opencode">OpenCode (opencode)</option>
+            <option value="custom">Custom Command</option>
+            <option value="none">Disabled (Inbox only)</option>
+          </select>
+          <label>Default Workspace Directory (optional)</label>
+          <input id="cfg-workdir" placeholder="~/projects/my-repo" />
+          <label>Relay URL</label>
+          <input id="cfg-relay" />
+          <div style="margin-top:12px">
+            <button class="btn primary" onclick="saveConfig()">Save Settings</button>
+          </div>
+
+          <h3 style="margin-top:18px">Detected CLIs on this machine</h3>
+          <div id="runners-grid" class="row"></div>
+        </div>
+
+        <div class="card">
+          <h2>Your Shareable Invite &amp; MCP Config</h2>
+          <label>Invite URI (send once to a colleague)</label>
+          <pre id="setup-invite"></pre>
+          <label>SSH Public Key</label>
+          <pre id="setup-ssh-key"></pre>
+          <label>Connect Claude Code / Codex / T3 / OpenCode / Hermes via MCP</label>
+          <pre>{
+  "mcpServers": {
+    "pa2pa": {
+      "command": "pa2pa",
+      "args": ["mcp"]
+    }
+  }
+}</pre>
+          <div class="muted">Tip: run <code>pa2pa pill</code> (or <code>pa2pa daemon --pill</code>) to launch the floating desktop pill controller.</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+    const API_TOKEN = document.querySelector('meta[name="pa2pa-token"]')?.content || '';
+    let state = { status: null, contacts: [], threads: [], approvals: [], selectedThread: null, editingAlias: null };
+
+    function toast(msg) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.style.display = 'block';
+      clearTimeout(window._toastTimer);
+      window._toastTimer = setTimeout(() => el.style.display = 'none', 3200);
+    }
+
+    function esc(s) {
+      return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    function switchTab(name) {
+      document.querySelectorAll('nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+      document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.id === 'tab-' + name));
+    }
+
+    async function api(path, opts = {}) {
+      const headers = Object.assign({ 'X-Pa2pa-Token': API_TOKEN }, opts.headers || {});
+      const res = await fetch(path, Object.assign({}, opts, { headers }));
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Request failed');
+      return data;
+    }
+
+    async function refreshAll() {
+      try {
+        const [status, contacts, threads, approvals, cfg] = await Promise.all([
+          api('/api/status'),
+          api('/api/contacts'),
+          api('/api/threads'),
+          api('/api/approvals'),
+          api('/api/config'),
+        ]);
+        state.status = status;
+        state.contacts = contacts.contacts || [];
+        state.threads = threads.threads || [];
+        state.approvals = approvals.approvals || [];
+        state.config = cfg.config;
+        renderHeader();
+        renderApprovals();
+        renderThreads();
+        renderContacts();
+        renderSetup();
+        if (state.selectedThread) {
+          await openThread(state.selectedThread, true);
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function renderHeader() {
+      const s = state.status;
+      if (!s) return;
+      document.getElementById('identity-title').textContent = `${s.display_name || s.name} (@${s.name})`;
+      document.getElementById('identity-fp').textContent = s.fingerprint;
+      const dot = document.getElementById('relay-dot');
+      const lbl = document.getElementById('relay-label');
+      if (s.relay_connected) {
+        dot.className = 'dot ok';
+        lbl.textContent = 'Relay Connected (E2E)';
+      } else {
+        dot.className = 'dot err';
+        lbl.textContent = s.relay_error ? `Offline: ${s.relay_error.slice(0, 32)}` : 'Relay Offline';
+      }
+      document.getElementById('runner-label').textContent = s.default_runner;
+
+      const apBadge = document.getElementById('nav-approvals-count');
+      apBadge.style.display = s.pending_approvals > 0 ? 'inline-block' : 'none';
+      apBadge.textContent = s.pending_approvals;
+
+      const unBadge = document.getElementById('nav-unread-count');
+      unBadge.style.display = s.unread_messages > 0 ? 'inline-block' : 'none';
+      unBadge.textContent = s.unread_messages;
+    }
+
+    function renderApprovals() {
+      const container = document.getElementById('approvals-list');
+      const pending = state.approvals.filter(a => a.status === 'pending');
+      const past = state.approvals.filter(a => a.status !== 'pending').slice(0, 8);
+      if (pending.length === 0 && past.length === 0) {
+        container.innerHTML = '<div class="card muted">All clear — no pending approval requests.</div>';
+        return;
+      }
+      let html = '';
+      for (const a of pending) {
+        html += `
+          <div class="card">
+            <div class="between">
+              <div class="row">
+                <strong>From @${esc(a.peer_alias)}</strong>
+                <span class="trust-tag trust-ask">Pending #${esc(a.id)}</span>
+              </div>
+              <span class="muted mono">${new Date(a.created_at).toLocaleString()}</span>
+            </div>
+            <div class="muted" style="margin-top:6px"><strong>Reason:</strong> ${esc(a.reason)}</div>
+            <div class="quote-box">${esc(a.peer_message)}</div>
+            ${a.proposed_action ? `<div class="muted"><strong>Proposed action:</strong> ${esc(a.proposed_action)}</div>` : ''}
+            <label>Reply to send (leave blank to use agent or default approval note)</label>
+            <textarea id="ap-reply-${esc(a.id)}" placeholder="Type a direct reply, or click 'Approve & Run Agent'...">${esc(a.proposed_reply || '')}</textarea>
+            <div class="row" style="margin-top:10px">
+              <button class="btn good" data-action="approve" data-id="${esc(a.id)}" data-mode="run_agent" data-exec="read-only">Approve &amp; Run Agent (Read-Only)</button>
+              <button class="btn warn" data-action="approve" data-id="${esc(a.id)}" data-mode="run_agent" data-exec="scoped-exec">Approve &amp; Run Agent (Exec)</button>
+              <button class="btn primary" data-action="approve" data-id="${esc(a.id)}" data-mode="reply">Send Reply</button>
+              <button class="btn danger" data-action="deny" data-id="${esc(a.id)}" data-notify="true">Deny &amp; Notify</button>
+              <button class="btn" data-action="deny" data-id="${esc(a.id)}" data-notify="false">Dismiss</button>
+            </div>
+          </div>`;
+      }
+      if (past.length > 0) {
+        html += '<h3 style="margin-top:22px" class="muted">Recent Decisions</h3>';
+        for (const a of past) {
+          html += `
+            <div class="card" style="opacity:0.72">
+              <div class="between">
+                <div><strong>@${esc(a.peer_alias)}</strong> — <span class="mono">${esc(a.status.toUpperCase())}</span></div>
+                <span class="muted mono">${new Date(a.created_at).toLocaleString()}</span>
+              </div>
+              <div class="muted" style="margin-top:4px">${esc(a.peer_message.slice(0, 140))}</div>
+            </div>`;
+        }
+      }
+      container.innerHTML = html;
+    }
+
+    async function approveItem(id, mode, execMode) {
+      try {
+        const replyEl = document.getElementById('ap-reply-' + id);
+        const reply = replyEl ? replyEl.value : '';
+        toast(mode === 'run_agent' ? 'Running local agent...' : 'Sending encrypted reply...');
+        await api(`/api/approvals/${encodeURIComponent(id)}/approve`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode, reply, execution_mode: execMode }),
+        });
+        toast('Approved & replied!');
+        refreshAll();
+      } catch (e) {
+        toast('Error: ' + e.message);
+      }
+    }
+
+    async function denyItem(id, notifyPeer) {
+      try {
+        await api(`/api/approvals/${encodeURIComponent(id)}/deny`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ notify_peer: notifyPeer }),
+        });
+        toast('Request denied');
+        refreshAll();
+      } catch (e) {
+        toast('Error: ' + e.message);
+      }
+    }
+
+    function renderThreads() {
+      const sel = document.getElementById('send-to');
+      const prev = sel.value;
+      sel.innerHTML = state.contacts.map(c => `<option value="${esc(c.alias)}">@${esc(c.alias)} (${esc(c.trust)})</option>`).join('');
+      if (prev) sel.value = prev;
+
+      const list = document.getElementById('threads-list');
+      if (state.threads.length === 0) {
+        list.innerHTML = '<div class="card muted">No conversations yet.</div>';
+        return;
+      }
+      list.innerHTML = state.threads.map(t => `
+        <div class="thread-item ${state.selectedThread === t.thread_id ? 'selected' : ''}" data-action="open-thread" data-thread-id="${esc(t.thread_id)}">
+          <div class="between">
+            <strong>@${esc(t.peer_alias)}</strong>
+            <span class="muted mono">${t.unread_count > 0 ? t.unread_count + ' new' : t.message_count + ' msgs'}</span>
+          </div>
+          ${t.subject ? `<div style="font-weight:600;font-size:13px">${esc(t.subject)}</div>` : ''}
+          <div class="muted" style="font-size:12px;margin-top:3px">${esc(t.last_message.slice(0, 90))}</div>
+        </div>
+      `).join('');
+    }
+
+    async function openThread(threadId, silent) {
+      state.selectedThread = threadId;
+      if (!silent) renderThreads();
+      try {
+        const data = await api(`/api/threads/${encodeURIComponent(threadId)}`);
+        const msgs = data.messages || [];
+        const peer = msgs[0]?.peer_alias || '';
+        const box = document.getElementById('thread-detail');
+        box.innerHTML = `
+          <div class="between" style="margin-bottom:12px">
+            <div>
+              <h3 style="margin:0">Thread with @${esc(peer)}</h3>
+              <div class="muted mono">${esc(threadId)}</div>
+            </div>
+          </div>
+          <div style="max-height:460px;overflow-y:auto;padding-right:4px">
+            ${msgs.map(m => `
+              <div class="msg-bubble ${m.direction === 'outbound' ? 'msg-out' : 'msg-in'}">
+                <div class="msg-meta">${m.direction === 'outbound' ? 'You / Your Agent' : '@' + esc(m.peer_alias)} · ${esc(m.sender_agent || 'agent')} · ${new Date(m.created_at).toLocaleTimeString()}</div>
+                ${esc(m.body)}
+                ${(m.attachments || []).map(att => `
+                  <details style="margin-top:8px">
+                    <summary class="mono" style="cursor:pointer;color:var(--accent)">📎 ${esc(att.filename)} (${esc(att.kind)})</summary>
+                    <pre style="max-height:220px;overflow:auto">${esc(att.content)}</pre>
+                  </details>
+                `).join('')}
+              </div>
+            `).join('')}
+            ${state.status?.thinking_peers?.[peer] === threadId ? `<div class="muted" style="font-size:12px;margin:6px 0">⏳ @${esc(peer)}'s agent is thinking…</div>` : ''}
+          </div>
+          <div style="margin-top:12px">
+            <textarea id="thread-reply-text" placeholder="Reply to @${esc(peer)}..."></textarea>
+            <div style="margin-top:8px">
+              <button class="btn primary" data-action="reply-thread" data-peer="${esc(peer)}" data-thread-id="${esc(threadId)}">Send Encrypted Reply</button>
+            </div>
+          </div>
+        `;
+      } catch (e) {
+        toast('Error: ' + e.message);
+      }
+    }
+
+    async function sendNewMessage() {
+      const to = document.getElementById('send-to').value;
+      const subject = document.getElementById('send-subject').value.trim() || null;
+      const message = document.getElementById('send-body').value.trim();
+      if (!to || !message) return toast('Select a contact and write a message');
+      try {
+        const res = await api('/api/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ to, subject, message }),
+        });
+        document.getElementById('send-body').value = '';
+        document.getElementById('send-subject').value = '';
+        state.selectedThread = res.thread_id;
+        toast(res.delivered_live ? 'Delivered live (E2E)!' : 'Queued on relay (peer offline)');
+        refreshAll();
+      } catch (e) {
+        toast('Send failed: ' + e.message);
+      }
+    }
+
+    async function replyInThread(to, threadId) {
+      const el = document.getElementById('thread-reply-text');
+      const message = el.value.trim();
+      if (!message) return;
+      try {
+        await api('/api/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ to, message, thread_id: threadId }),
+        });
+        el.value = '';
+        toast('Encrypted reply sent!');
+        refreshAll();
+      } catch (e) {
+        toast('Reply failed: ' + e.message);
+      }
+    }
+
+    function renderContacts() {
+      const list = document.getElementById('contacts-list');
+      if (state.contacts.length === 0) {
+        list.innerHTML = '<div class="card muted">No contacts whitelisted yet. Add a colleague on the left!</div>';
+        return;
+      }
+      const onlineSet = new Set(state.status?.online_peers || []);
+      const thinkingMap = state.status?.thinking_peers || {};
+      list.innerHTML = state.contacts.map(c => `
+        <div class="card">
+          <div class="between">
+            <div class="row">
+              <span class="dot ${onlineSet.has(c.alias) ? 'ok' : ''}" title="${onlineSet.has(c.alias) ? 'Online' : 'Offline'}"></span>
+              <strong>@${esc(c.alias)}</strong>
+              ${c.display_name ? `<span class="muted">${esc(c.display_name)}</span>` : ''}
+              <span class="trust-tag trust-${esc(c.trust)}">${esc(c.trust)}</span>
+              ${thinkingMap[c.alias] ? `<span class="badge">⏳ Thinking…</span>` : ''}
+            </div>
+            <div class="row">
+              <button class="btn sm" data-action="edit-contact" data-alias="${esc(c.alias)}">Edit</button>
+              <button class="btn sm danger" data-action="remove-contact" data-alias="${esc(c.alias)}">Remove</button>
+            </div>
+          </div>
+          <div class="mono muted" style="margin-top:6px">${esc(c.fingerprint)}</div>
+          ${c.allowed_paths?.length ? `<div class="muted" style="font-size:12px;margin-top:4px">Paths: ${esc(c.allowed_paths.join(', '))}</div>` : ''}
+          <div style="margin-top:8px;white-space:pre-wrap;font-size:13px">${esc(c.prompt || '(No description/prompt)')}</div>
+        </div>
+      `).join('');
+    }
+
+    function editContact(alias) {
+      const c = state.contacts.find(x => x.alias === alias);
+      if (!c) return;
+      state.editingAlias = alias;
+      document.getElementById('contact-form-title').textContent = `Edit @${alias}`;
+      document.getElementById('c-invite').value = '';
+      document.getElementById('c-github').value = '';
+      document.getElementById('c-alias').value = c.alias;
+      document.getElementById('c-alias').disabled = true;
+      document.getElementById('c-display').value = c.display_name || '';
+      document.getElementById('c-ssh-key').value = c.ssh_key;
+      document.getElementById('c-trust').value = c.trust;
+      document.getElementById('c-runner').value = c.runner || '';
+      document.getElementById('c-paths').value = (c.allowed_paths || []).join(', ');
+      document.getElementById('c-approval-for').value = (c.require_approval_for || []).join(', ');
+      document.getElementById('c-prompt').value = c.prompt || '';
+    }
+
+    function resetContactForm() {
+      state.editingAlias = null;
+      document.getElementById('contact-form-title').textContent = 'Whitelist a Contact';
+      document.getElementById('c-alias').disabled = false;
+      ['c-invite','c-github','c-alias','c-display','c-ssh-key','c-paths','c-prompt'].forEach(id => document.getElementById(id).value = '');
+      document.getElementById('c-trust').value = 'ask';
+      document.getElementById('c-runner').value = '';
+      document.getElementById('c-approval-for').value = 'write, shell, git_push, secrets';
+    }
+
+    async function saveContact() {
+      const paths = document.getElementById('c-paths').value.split(',').map(s => s.trim()).filter(Boolean);
+      const approvalFor = document.getElementById('c-approval-for').value.split(',').map(s => s.trim()).filter(Boolean);
+      const runnerVal = document.getElementById('c-runner').value || null;
+      try {
+        if (state.editingAlias) {
+          await api(`/api/contacts/${encodeURIComponent(state.editingAlias)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              display_name: document.getElementById('c-display').value,
+              ssh_key: document.getElementById('c-ssh-key').value,
+              trust: document.getElementById('c-trust').value,
+              allowed_paths: paths,
+              require_approval_for: approvalFor,
+              runner: runnerVal,
+              prompt: document.getElementById('c-prompt').value,
+            }),
+          });
+          toast('Contact updated');
+        } else {
+          await api('/api/contacts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              invite_uri: document.getElementById('c-invite').value.trim() || null,
+              github_username: document.getElementById('c-github').value.trim() || null,
+              alias: document.getElementById('c-alias').value.trim() || null,
+              display_name: document.getElementById('c-display').value.trim() || null,
+              ssh_key: document.getElementById('c-ssh-key').value.trim() || null,
+              trust: document.getElementById('c-trust').value,
+              allowed_paths: paths,
+              require_approval_for: approvalFor,
+              runner: runnerVal,
+              prompt: document.getElementById('c-prompt').value,
+            }),
+          });
+          toast('Contact whitelisted!');
+        }
+        resetContactForm();
+        refreshAll();
+      } catch (e) {
+        toast('Error: ' + e.message);
+      }
+    }
+
+    async function removeContact(alias) {
+      if (!confirm(`Remove @${alias} from your SSH whitelist?`)) return;
+      try {
+        await api(`/api/contacts/${encodeURIComponent(alias)}`, { method: 'DELETE' });
+        toast('Contact removed');
+        refreshAll();
+      } catch (e) {
+        toast('Error: ' + e.message);
+      }
+    }
+
+    function renderSetup() {
+      const s = state.status;
+      if (!s) return;
+      document.getElementById('setup-invite').textContent = s.invite_uri;
+      document.getElementById('setup-ssh-key').textContent = s.ssh_public_key;
+      if (state.config) {
+        document.getElementById('cfg-runner').value = state.config.daemon.default_runner;
+        document.getElementById('cfg-workdir').value = state.config.daemon.default_workdir || '';
+        document.getElementById('cfg-relay').value = state.config.relay_url;
+      }
+      document.getElementById('runners-grid').innerHTML = (s.runners || []).map(r => `
+        <span class="badge">
+          <span class="dot ${r.installed ? 'ok' : ''}"></span>
+          ${esc(r.label)} <span class="muted">(${esc(r.binary)})</span>
+        </span>
+      `).join('');
+    }
+
+    async function saveConfig() {
+      try {
+        await api('/api/config', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            default_runner: document.getElementById('cfg-runner').value,
+            default_workdir: document.getElementById('cfg-workdir').value.trim(),
+            relay_url: document.getElementById('cfg-relay').value.trim(),
+          }),
+        });
+        toast('Settings saved');
+        refreshAll();
+      } catch (e) {
+        toast('Error: ' + e.message);
+      }
+    }
+
+    async function copyInvite() {
+      if (!state.status?.invite_uri) return;
+      await navigator.clipboard.writeText(state.status.invite_uri);
+      toast('Copied pa2pa:// invite URI!');
+    }
+
+    // Delegated click handler (zero inline JS interpolation of dynamic IDs)
+    document.addEventListener('click', (e) => {
+      const el = e.target.closest('[data-action]');
+      if (!el) return;
+      const action = el.dataset.action;
+      if (action === 'approve') approveItem(el.dataset.id, el.dataset.mode, el.dataset.exec);
+      else if (action === 'deny') denyItem(el.dataset.id, el.dataset.notify === 'true');
+      else if (action === 'open-thread') openThread(el.dataset.threadId);
+      else if (action === 'reply-thread') replyInThread(el.dataset.peer, el.dataset.threadId);
+      else if (action === 'edit-contact') editContact(el.dataset.alias);
+      else if (action === 'remove-contact') removeContact(el.dataset.alias);
+    });
+
+    // Live SSE updates (authenticated with per-daemon token)
+    const es = new EventSource('/api/events?token=' + encodeURIComponent(API_TOKEN));
+    ['refresh', 'approval', 'message'].forEach(evt => es.addEventListener(evt, () => refreshAll()));
+    refreshAll();
+  </script>
+</body>
+</html>

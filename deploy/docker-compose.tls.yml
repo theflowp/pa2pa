@@ -1,0 +1,32 @@
+services:
+  pa2pa-relay:
+    build: ..
+    container_name: pa2pa-relay
+    restart: unless-stopped
+    environment:
+      PA2PA_RELAY_LISTEN: "0.0.0.0:8787"
+      PA2PA_RELAY_DB: "/data/pa2pa-relay.db"
+      PA2PA_RELAY_TTL_HOURS: "168"
+      PA2PA_RELAY_STRICT_ALLOWLIST: "false"
+      PA2PA_RELAY_RATE_LIMIT: "60"
+    volumes:
+      - pa2pa_relay_data:/data
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: pa2pa-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - pa2pa-relay
+
+volumes:
+  pa2pa_relay_data:
+  caddy_data:
+  caddy_config:

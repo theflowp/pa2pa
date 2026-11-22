@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!--PA2PA_TOKEN_META-->
+  <title>pa2pa Pill</title>
+  <style>
+    * { box-sizing: border-box; user-select: none; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background: transparent !important;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", sans-serif;
+      color: #edf2ff;
+    }
+    .shell {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-end;
+      width: 100%;
+      height: 100%;
+      padding: 6px;
+    }
+    .card {
+      width: 100%;
+      background: rgba(15, 18, 28, 0.94);
+      backdrop-filter: blur(22px);
+      -webkit-backdrop-filter: blur(22px);
+      border: 1px solid rgba(255, 255, 255, 0.13);
+      border-radius: 18px;
+      padding: 14px;
+      margin-bottom: 8px;
+      box-shadow: 0 18px 42px rgba(0, 0, 0, 0.55);
+      display: none;
+    }
+    .card.open { display: block; }
+    .card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      font-size: 12px;
+    }
+    .peer-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 700;
+      font-size: 13px;
+    }
+    .tag {
+      background: rgba(251, 191, 36, 0.18);
+      color: #fbbf24;
+      padding: 2px 7px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .reason {
+      font-size: 11.5px;
+      color: #9ba8c4;
+      margin-bottom: 8px;
+    }
+    .msg-box {
+      background: rgba(255, 255, 255, 0.05);
+      border-left: 2.5px solid #fbbf24;
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 12.5px;
+      line-height: 1.4;
+      max-height: 92px;
+      overflow-y: auto;
+      user-select: text;
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin-bottom: 9px;
+    }
+    textarea {
+      width: 100%;
+      height: 52px;
+      resize: none;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 10px;
+      color: #f3f6ff;
+      padding: 7px 9px;
+      font-size: 12px;
+      font-family: inherit;
+      user-select: text;
+      margin-bottom: 8px;
+      outline: none;
+    }
+    textarea:focus { border-color: #6c8cff; }
+    .actions {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    button {
+      border: none;
+      border-radius: 9px;
+      padding: 6px 10px;
+      font-size: 11.5px;
+      font-weight: 600;
+      cursor: pointer;
+      color: #edf2ff;
+      background: rgba(255, 255, 255, 0.09);
+      transition: transform 0.08s ease, background 0.12s ease;
+    }
+    button:hover { background: rgba(255, 255, 255, 0.16); }
+    button:active { transform: scale(0.97); }
+    .btn-good { background: rgba(52, 211, 153, 0.22); color: #34d399; }
+    .btn-good:hover { background: rgba(52, 211, 153, 0.34); }
+    .btn-primary { background: #6c8cff; color: #090d16; }
+    .btn-primary:hover { background: #819dff; }
+    .btn-danger { background: rgba(248, 113, 113, 0.2); color: #f87171; }
+    .btn-danger:hover { background: rgba(248, 113, 113, 0.32); }
+
+    .pill {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      height: 44px;
+      min-width: 248px;
+      max-width: 100%;
+      padding: 0 10px 0 14px;
+      border-radius: 999px;
+      background: rgba(15, 18, 28, 0.92);
+      backdrop-filter: blur(22px);
+      -webkit-backdrop-filter: blur(22px);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.48);
+    }
+    .pill.alert {
+      border-color: rgba(251, 191, 36, 0.65);
+      box-shadow: 0 0 24px rgba(251, 191, 36, 0.28), 0 12px 30px rgba(0, 0, 0, 0.48);
+    }
+    .drag-zone {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      flex: 1;
+      cursor: grab;
+      height: 100%;
+    }
+    .drag-zone:active { cursor: grabbing; }
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #64748b;
+      flex-shrink: 0;
+    }
+    .dot.ok { background: #34d399; box-shadow: 0 0 8px #34d399; }
+    .dot.warn { background: #fbbf24; box-shadow: 0 0 10px #fbbf24; animation: pulse 1.5s infinite; }
+    .dot.err { background: #f87171; }
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.25); opacity: 0.7; }
+    }
+    .pill-title {
+      font-size: 12.5px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .pill-btns { display: flex; align-items: center; gap: 4px; }
+    .icon-btn {
+      width: 28px;
+      height: 28px;
+      border-radius: 999px;
+      padding: 0;
+      display: grid;
+      place-items: center;
+      font-size: 13px;
+      background: rgba(255, 255, 255, 0.08);
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div id="card" class="card"></div>
+
+    <div id="pill" class="pill">
+      <div class="drag-zone" id="drag-zone" title="Drag pill · Double-click to toggle">
+        <span id="dot" class="dot"></span>
+        <span id="pill-text" class="pill-title">pa2pa · connecting…</span>
+      </div>
+      <div class="pill-btns">
+        <button class="icon-btn" id="toggle-btn" title="Expand / Collapse" onclick="toggleExpand()">▲</button>
+        <button class="icon-btn" title="Open Web Dashboard" onclick="openDashboard()">↗</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API_TOKEN = document.querySelector('meta[name="pa2pa-token"]')?.content || '';
+    let expanded = false;
+    let statusData = null;
+    let pendingApprovals = [];
+    let activeIdx = 0;
+    let lastApprovalCount = 0;
+
+    function apiFetch(path, opts = {}) {
+      const headers = Object.assign({ 'X-Pa2pa-Token': API_TOKEN }, opts.headers || {});
+      return fetch(path, Object.assign({}, opts, { headers }));
+    }
+
+    function postIpc(payload) {
+      if (window.ipc && typeof window.ipc.postMessage === 'function') {
+        window.ipc.postMessage(JSON.stringify(payload));
+      }
+    }
+
+    function esc(s) {
+      return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    function setExpanded(next) {
+      expanded = next;
+      document.getElementById('card').classList.toggle('open', expanded);
+      document.getElementById('toggle-btn').textContent = expanded ? '▼' : '▲';
+      postIpc({ type: 'resize', expanded });
+      renderCard();
+    }
+
+    function toggleExpand() {
+      setExpanded(!expanded);
+    }
+
+    function openDashboard() {
+      if (window.ipc) {
+        postIpc({ type: 'open_dashboard' });
+      } else {
+        window.open('/', '_blank');
+      }
+    }
+
+    document.getElementById('drag-zone').addEventListener('mousedown', (e) => {
+      if (e.detail === 2) {
+        toggleExpand();
+        return;
+      }
+      postIpc({ type: 'drag' });
+    });
+
+    async function fetchState() {
+      try {
+        const [stRes, apRes] = await Promise.all([
+          apiFetch('/api/status'),
+          apiFetch('/api/approvals?status=pending')
+        ]);
+        statusData = await stRes.json();
+        const apJson = await apRes.json();
+        pendingApprovals = apJson.approvals || [];
+
+        if (pendingApprovals.length > lastApprovalCount && !expanded) {
+          setExpanded(true);
+        }
+        lastApprovalCount = pendingApprovals.length;
+        if (activeIdx >= pendingApprovals.length) activeIdx = 0;
+
+        renderPill();
+        renderCard();
+      } catch (e) {
+        document.getElementById('dot').className = 'dot err';
+        document.getElementById('pill-text').textContent = 'pa2pa · daemon offline';
+      }
+    }
+
+    function renderPill() {
+      const dot = document.getElementById('dot');
+      const txt = document.getElementById('pill-text');
+      const pill = document.getElementById('pill');
+      if (!statusData) return;
+
+      const thinkingEntries = Object.keys(statusData.thinking_peers || {});
+      const onlineCount = (statusData.online_peers || []).length;
+      if (pendingApprovals.length > 0) {
+        dot.className = 'dot warn';
+        pill.classList.add('alert');
+        txt.textContent = `${pendingApprovals.length} approval${pendingApprovals.length > 1 ? 's' : ''} · @${pendingApprovals[0].peer_alias}`;
+      } else if (thinkingEntries.length > 0) {
+        dot.className = 'dot ok';
+        pill.classList.remove('alert');
+        txt.textContent = `⏳ @${thinkingEntries[0]} thinking…`;
+      } else if (statusData.relay_connected) {
+        dot.className = 'dot ok';
+        pill.classList.remove('alert');
+        txt.textContent = statusData.unread_messages > 0
+          ? `${statusData.unread_messages} unread · @${statusData.name}`
+          : `pa2pa · @${statusData.name} (${onlineCount} online)`;
+      } else {
+        dot.className = 'dot err';
+        pill.classList.remove('alert');
+        txt.textContent = `pa2pa · relay offline`;
+      }
+      postIpc({
+        type: 'status',
+        relay_connected: Boolean(statusData.relay_connected),
+        pending_approvals: pendingApprovals.length,
+        unread_messages: Number(statusData.unread_messages || 0),
+        online_peers: onlineCount,
+      });
+    }
+
+    function renderCard() {
+      const card = document.getElementById('card');
+      if (!expanded) return;
+
+      if (pendingApprovals.length === 0) {
+        card.innerHTML = `
+          <div class="card-head">
+            <span class="peer-badge">@${esc(statusData?.name || 'pa2pa')}</span>
+            <span style="color:#8c98b3">${statusData?.contacts_count || 0} contacts</span>
+          </div>
+          <div class="reason">No pending approvals. Your personal agent is standing by (${esc(statusData?.default_runner || 'claude')}).</div>
+          <div class="actions">
+            <button class="btn-primary" data-action="open-dashboard">Open Dashboard</button>
+            <button data-action="minimize">Minimize</button>
+          </div>
+        `;
+        return;
+      }
+
+      const ap = pendingApprovals[activeIdx];
+      card.innerHTML = `
+        <div class="card-head">
+          <span class="peer-badge">@${esc(ap.peer_alias)} <span class="tag">Approval ${activeIdx + 1}/${pendingApprovals.length}</span></span>
+          <div style="display:flex;gap:4px">
+            ${pendingApprovals.length > 1 ? `<button class="icon-btn" data-action="cycle" data-delta="-1">‹</button><button class="icon-btn" data-action="cycle" data-delta="1">›</button>` : ''}
+          </div>
+        </div>
+        <div class="reason">${esc(ap.reason)}</div>
+        <div class="msg-box">${esc(ap.peer_message)}</div>
+        <textarea id="pill-reply" placeholder="Optional custom reply...">${esc(ap.proposed_reply || '')}</textarea>
+        <div class="actions">
+          <button class="btn-good" data-action="decide" data-id="${esc(ap.id)}" data-mode="run_agent">Run Agent</button>
+          <button class="btn-primary" data-action="decide" data-id="${esc(ap.id)}" data-mode="reply">Send Reply</button>
+          <button class="btn-danger" data-action="deny" data-id="${esc(ap.id)}">Deny</button>
+          <button data-action="open-dashboard">Details</button>
+        </div>
+      `;
+    }
+
+    function cycleApproval(delta) {
+      activeIdx = (activeIdx + delta + pendingApprovals.length) % pendingApprovals.length;
+      renderCard();
+    }
+
+    async function decide(id, mode) {
+      const reply = document.getElementById('pill-reply')?.value || '';
+      document.getElementById('pill-text').textContent = mode === 'run_agent' ? 'Running agent…' : 'Sending…';
+      try {
+        await apiFetch(`/api/approvals/${encodeURIComponent(id)}/approve`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode, reply, execution_mode: 'read-only' }),
+        });
+        await fetchState();
+        if (pendingApprovals.length === 0) setExpanded(false);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function deny(id) {
+      try {
+        await apiFetch(`/api/approvals/${encodeURIComponent(id)}/deny`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ notify_peer: true }),
+        });
+        await fetchState();
+        if (pendingApprovals.length === 0) setExpanded(false);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    document.addEventListener('click', (e) => {
+      const el = e.target.closest('[data-action]');
+      if (!el) return;
+      const action = el.dataset.action;
+      if (action === 'decide') decide(el.dataset.id, el.dataset.mode);
+      else if (action === 'deny') deny(el.dataset.id);
+      else if (action === 'cycle') cycleApproval(Number(el.dataset.delta || 0));
+      else if (action === 'open-dashboard') openDashboard();
+      else if (action === 'minimize') setExpanded(false);
+    });
+
+    const es = new EventSource('/api/events?token=' + encodeURIComponent(API_TOKEN));
+    ['refresh', 'approval', 'message'].forEach(ev => es.addEventListener(ev, () => fetchState()));
+    fetchState();
+  </script>
+</body>
+</html>

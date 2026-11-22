@@ -1,0 +1,4 @@
+# Replace with your relay domain (automatic Let's Encrypt HTTPS + WSS)
+relay.example.com {
+    reverse_proxy pa2pa-relay:8787
+}

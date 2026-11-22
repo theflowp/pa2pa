@@ -1,0 +1,54 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pa2pa-crypto",
+    "crates/pa2pa-proto",
+    "crates/pa2pa-core",
+    "crates/pa2pa-relay",
+    "crates/pa2pa-mcp",
+    "crates/pa2pa-daemon",
+    "crates/pa2pa-cli",
+    "crates/pa2pa-pill",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1.0"
+axum = { version = "0.7", features = ["ws"] }
+base64 = "0.22"
+chacha20poly1305 = "0.10"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+dirs = "5.0"
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+futures-util = "0.3"
+open = "5.3"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+sha2 = "0.10"
+ssh-key = { version = "0.6", features = ["ed25519", "encryption", "rand_core", "std"] }
+thiserror = "2.0"
+tokio = { version = "1.40", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1.10", features = ["v4", "serde"] }
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+zeroize = "1.8"
+
+pa2pa-crypto = { path = "crates/pa2pa-crypto" }
+pa2pa-proto = { path = "crates/pa2pa-proto" }
+pa2pa-core = { path = "crates/pa2pa-core" }
+pa2pa-relay = { path = "crates/pa2pa-relay" }
+pa2pa-mcp = { path = "crates/pa2pa-mcp" }
+pa2pa-daemon = { path = "crates/pa2pa-daemon" }

@@ -1,0 +1,25 @@
+[package]
+name = "pa2pa-relay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+base64.workspace = true
+chrono.workspace = true
+futures-util.workspace = true
+pa2pa-crypto.workspace = true
+pa2pa-proto.workspace = true
+rand.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+pa2pa-core.workspace = true
+

@@ -1,0 +1,16 @@
+services:
+  pa2pa-relay:
+    build: .
+    container_name: pa2pa-relay
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      PA2PA_RELAY_LISTEN: "0.0.0.0:8787"
+      PA2PA_RELAY_DB: "/data/pa2pa-relay.db"
+      PA2PA_RELAY_TTL_HOURS: "168"
+    volumes:
+      - pa2pa_relay_data:/data
+
+volumes:
+  pa2pa_relay_data:
