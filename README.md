@@ -24,13 +24,13 @@ If you are an AI agent installing `pa2pa` for your human owner, follow these exa
 
 ### Step 1 — Install `pa2pa` and `pa2pa-pill`
 
-- **macOS / Linux (1-liner — downloads prebuilt release or builds from source):**
+- **macOS / Linux (1-liner — downloads prebuilt release with SHA-256 verification, or builds from source; pass `--from-source` inside a local git clone to build local code):**
   ```bash
   curl -fsSL https://raw.githubusercontent.com/theflowp/pa2pa/main/scripts/install.sh | bash
   ```
-  *(On Linux, if you want the native system tray icon + floating pill when building from source, ensure `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev libxdo-dev` are installed on Debian/Ubuntu.)*
+  *(On Linux, if you want the native system tray icon + floating pill when building from source, ensure `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev libxdo-dev` are installed on Debian/Ubuntu. Upgrading an existing install automatically restarts installed background services.)*
 
-- **Windows (PowerShell 1-liner):**
+- **Windows (PowerShell 1-liner; pass `-FromSource` inside a local clone):**
   ```powershell
   irm https://raw.githubusercontent.com/theflowp/pa2pa/main/scripts/install.ps1 | iex
   ```
@@ -43,31 +43,36 @@ pa2pa doctor
 ### Step 2 — Initialize Identity (SSH Ed25519 — Zero Server Needed!)
 
 ```bash
-# Default: zero-server hybrid P2P (direct QUIC + local encrypted outbox retry)
+# Default: zero-server hybrid P2P + dedicated 0600 Ed25519 key isolated from ~/.ssh/id_ed25519
 pa2pa init --name "<short-alias>" --display-name "<Display Name>"
 
 # Optional: also attach a team mailbox relay for 24/7 offline delivery when both laptops sleep
 pa2pa init --name "<short-alias>" --display-name "<Display Name>" --relay "wss://relay.example.com/ws"
 ```
-- `pa2pa init` automatically reuses `~/.ssh/id_ed25519` if available and unencrypted, or generates a dedicated `0600` OpenSSH Ed25519 key in pa2pa's config folder.
-- Your SSH Ed25519 public key **is** your P2P QUIC identity (via `iroh`), so adding someone via `--github <username>` or `pa2pa://v1/...` immediately enables direct NAT-traversing P2P connections with zero server setup.
-- If the user's `~/.ssh/id_ed25519` has a passphrase, either set `PA2PA_SSH_PASSPHRASE` or pass `--dedicated-key` (recommended for unattended background daemons).
+- By default, `pa2pa init` generates a **dedicated `0600` OpenSSH Ed25519 key** inside `pa2pa`'s config folder so the background daemon never holds your primary GitHub/server SSH key.
+- Your Ed25519 public key **is** your P2P QUIC identity (via `iroh`), so sharing your `pa2pa://v1/...` invite link immediately enables direct NAT-traversing P2P connections with zero server setup.
+- Because a dedicated key is not published on GitHub, colleagues should add you via your `pa2pa://v1/...` invite link. If you explicitly want colleagues to add you via `--github <username>`, pass `--reuse-ssh-key` (or `--ssh-key /path/to/key`; set `PA2PA_SSH_PASSPHRASE` if encrypted).
 
 ### Step 3 — Auto-Connect AI Agents via MCP
 
 ```bash
 pa2pa setup-mcp --apply
 ```
-Automatically configures detected tools (**Claude Code, Codex, OpenCode, Cursor, Mistral Vibe**) and backs up existing config files. For any other MCP tool (T3 Code, Antigravity, Hermes), run `pa2pa setup-mcp` (without `--apply`) and add the printed JSON snippet to its MCP config.
+Automatically configures detected tools (**Claude Code** in `user` scope, **Codex**, **Antigravity**, **Mistral Vibe** via `[[mcp_servers]]` in `~/.vibe/config.toml`, **OpenCode**, **Cursor**) with timestamped permission-preserving backups and strict JSON/TOML safety checks.
+- **T3 Code** has no standalone MCP config file — it automatically inherits MCP servers from its configured providers (Claude Code, Codex, Antigravity, Mistral Vibe).
+- For any other MCP client (e.g. Hermes), run `pa2pa setup-mcp` (without `--apply`) to print the exact snippets.
 
 ### Step 4 — Start Daemon + Menu Bar / System Tray Icon + Floating Pill at Login
 
 ```bash
 pa2pa service install
+pa2pa doctor
 ```
-- **macOS**: installs LaunchAgents (`dev.pa2pa.daemon` + `dev.pa2pa.pill`) — adds the live status icon to the **top menu bar** (no Dock clutter) and floats the pill across all Spaces (`⌘⇧P` toggles visibility).
+- **macOS**: installs LaunchAgents (`dev.pa2pa.daemon` + `dev.pa2pa.pill`) via `launchctl bootstrap` — adds the live status icon to the **top menu bar** (no Dock clutter) and floats the pill across all Spaces (`⌘⇧P` toggles visibility).
 - **Linux**: installs `systemd --user` services (`pa2pa-daemon.service` + `pa2pa-pill.service`) — adds the **system tray icon** + floating pill (`Ctrl+Shift+P` toggles visibility).
 - **Windows**: installs a background Startup launcher in `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\pa2pa.vbs` — adds the **Windows taskbar tray icon** + floating pill (`Ctrl+Shift+P` toggles visibility).
+- `pa2pa doctor` verifies your config, SSH key, live daemon reachability, background services, MCP registrations across all agents, and available headless runners.
+- Use `pa2pa service restart` anytime after upgrading binaries.
 
 Or run interactively right away:
 ```bash

@@ -12,7 +12,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 license = "MIT"
 
@@ -30,12 +30,12 @@ iroh = "1.5"
 open = "5.3"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
 sha2 = "0.10"
-ssh-key = { version = "0.6", features = ["ed25519", "encryption", "rand_core", "std"] }
+ssh-key = { version = "0.6", default-features = false, features = ["ed25519", "encryption", "rand_core", "std"] }
 thiserror = "2.0"
 tokio = { version = "1.40", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }

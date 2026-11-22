@@ -1,8 +1,16 @@
-use anyhow::{anyhow, Result};
+use crate::setup_mcp::CheckStatus;
+use anyhow::{anyhow, bail, Result};
 use pa2pa_core::{Config, Pa2paPaths};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+#[derive(Debug, Clone)]
+pub struct ServiceCheck {
+    pub name: String,
+    pub status: CheckStatus,
+    pub detail: String,
+}
 
 pub fn install_service(paths: &Pa2paPaths, with_pill: bool) -> Result<()> {
     let cfg = Config::load(paths)?;
@@ -28,7 +36,7 @@ pub fn install_service(paths: &Pa2paPaths, with_pill: bool) -> Result<()> {
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         let _ = (pa2pa_exe, pill_exe, ui_url, with_pill);
-        anyhow::bail!("Automatic service installation is supported on macOS, Linux, and Windows.");
+        bail!("Automatic service installation is supported on macOS, Linux, and Windows.");
     }
 
     Ok(())
@@ -37,14 +45,27 @@ pub fn install_service(paths: &Pa2paPaths, with_pill: bool) -> Result<()> {
 pub fn uninstall_service() -> Result<()> {
     #[cfg(target_os = "macos")]
     {
+        let uid = macos_uid()?;
         let agents_dir = dirs::home_dir()
             .ok_or_else(|| anyhow!("Cannot locate HOME"))?
             .join("Library")
             .join("LaunchAgents");
-        for label in ["dev.pa2pa.daemon.plist", "dev.pa2pa.pill.plist"] {
-            let p = agents_dir.join(label);
+        for (label, file) in [
+            ("dev.pa2pa.daemon", "dev.pa2pa.daemon.plist"),
+            ("dev.pa2pa.pill", "dev.pa2pa.pill.plist"),
+        ] {
+            let p = agents_dir.join(file);
+            if launchctl_is_loaded(&uid, label) {
+                let target = format!("gui/{uid}/{label}");
+                let out = Command::new("launchctl")
+                    .args(["bootout", &target])
+                    .output()?;
+                if !out.status.success() {
+                    let err = combined_output(&out);
+                    eprintln!("Warning: launchctl bootout {target} returned error: {err}");
+                }
+            }
             if p.exists() {
-                let _ = Command::new("launchctl").args(["unload", "-w"]).arg(&p).status();
                 fs::remove_file(&p)?;
                 println!("Removed LaunchAgent: {}", p.display());
             }
@@ -60,7 +81,7 @@ pub fn uninstall_service() -> Result<()> {
         for unit in ["pa2pa-daemon.service", "pa2pa-pill.service"] {
             let _ = Command::new("systemctl")
                 .args(["--user", "disable", "--now", unit])
-                .status();
+                .output();
             let p = unit_dir.join(unit);
             if p.exists() {
                 fs::remove_file(&p)?;
@@ -69,7 +90,7 @@ pub fn uninstall_service() -> Result<()> {
         }
         let _ = Command::new("systemctl")
             .args(["--user", "daemon-reload"])
-            .status();
+            .output();
     }
 
     #[cfg(target_os = "windows")]
@@ -86,37 +107,185 @@ pub fn uninstall_service() -> Result<()> {
     Ok(())
 }
 
-pub fn service_status() -> Result<()> {
+pub fn restart_service() -> Result<()> {
     #[cfg(target_os = "macos")]
     {
+        let uid = macos_uid()?;
         let agents_dir = dirs::home_dir()
             .ok_or_else(|| anyhow!("Cannot locate HOME"))?
             .join("Library")
             .join("LaunchAgents");
-        for label in ["dev.pa2pa.daemon.plist", "dev.pa2pa.pill.plist"] {
-            let p = agents_dir.join(label);
-            println!(
-                "  {} : {}",
-                label,
-                if p.exists() {
-                    format!("installed ({})", p.display())
-                } else {
-                    "not installed".to_string()
+        let mut restarted = 0usize;
+        for (label, file) in [
+            ("dev.pa2pa.daemon", "dev.pa2pa.daemon.plist"),
+            ("dev.pa2pa.pill", "dev.pa2pa.pill.plist"),
+        ] {
+            let p = agents_dir.join(file);
+            if !p.exists() {
+                continue;
+            }
+            if launchctl_is_loaded(&uid, label) {
+                let target = format!("gui/{uid}/{label}");
+                let out = Command::new("launchctl")
+                    .args(["kickstart", "-k", &target])
+                    .output()?;
+                if !out.status.success() {
+                    bail!(
+                        "Failed to restart {label} via `launchctl kickstart -k {target}`: {}",
+                        combined_output(&out)
+                    );
                 }
-            );
+            } else {
+                let domain = format!("gui/{uid}");
+                let out = Command::new("launchctl")
+                    .args(["bootstrap", &domain])
+                    .arg(&p)
+                    .output()?;
+                if !out.status.success() {
+                    bail!(
+                        "Failed to start {label} via `launchctl bootstrap`: {}",
+                        combined_output(&out)
+                    );
+                }
+            }
+            println!("Restarted macOS LaunchAgent: {label}");
+            restarted += 1;
+        }
+        if restarted == 0 {
+            println!("No pa2pa LaunchAgents are installed. Run `pa2pa service install` first.");
+        }
+        return Ok(());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let unit_dir = dirs::config_dir()
+            .ok_or_else(|| anyhow!("Cannot locate XDG config dir"))?
+            .join("systemd")
+            .join("user");
+        let mut restarted = 0usize;
+        for unit in ["pa2pa-daemon.service", "pa2pa-pill.service"] {
+            if !unit_dir.join(unit).exists() {
+                continue;
+            }
+            let out = Command::new("systemctl")
+                .args(["--user", "restart", unit])
+                .output()?;
+            if !out.status.success() {
+                bail!(
+                    "Failed to restart {unit} via `systemctl --user restart`: {}",
+                    combined_output(&out)
+                );
+            }
+            println!("Restarted systemd user service: {unit}");
+            restarted += 1;
+        }
+        if restarted == 0 {
+            println!("No pa2pa systemd user services are installed. Run `pa2pa service install` first.");
+        }
+        return Ok(());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        println!(
+            "On Windows, stop any running `pa2pa.exe` / `pa2pa-pill.exe` process (or sign out and back in) \
+             so the Startup launcher picks up the new binary."
+        );
+        return Ok(());
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        bail!("Service restart is supported on macOS, Linux, and Windows.");
+    }
+}
+
+pub fn inspect_services() -> Vec<ServiceCheck> {
+    let mut checks = Vec::new();
+
+    #[cfg(target_os = "macos")]
+    {
+        let uid = macos_uid().ok();
+        if let Some(home) = dirs::home_dir() {
+            let agents_dir = home.join("Library").join("LaunchAgents");
+            for (label, file) in [
+                ("dev.pa2pa.daemon", "dev.pa2pa.daemon.plist"),
+                ("dev.pa2pa.pill", "dev.pa2pa.pill.plist"),
+            ] {
+                let p = agents_dir.join(file);
+                if !p.exists() {
+                    checks.push(ServiceCheck {
+                        name: label.to_string(),
+                        status: CheckStatus::Missing,
+                        detail: "not installed".to_string(),
+                    });
+                    continue;
+                }
+                if let Some(ref u) = uid {
+                    match launchctl_service_state(u, label) {
+                        LaunchdState::Running(pid) => checks.push(ServiceCheck {
+                            name: label.to_string(),
+                            status: CheckStatus::Ok,
+                            detail: format!("running (PID {pid}) — {}", p.display()),
+                        }),
+                        LaunchdState::Loaded => checks.push(ServiceCheck {
+                            name: label.to_string(),
+                            status: CheckStatus::Ok,
+                            detail: format!("loaded — {}", p.display()),
+                        }),
+                        LaunchdState::NotLoaded => checks.push(ServiceCheck {
+                            name: label.to_string(),
+                            status: CheckStatus::Warn,
+                            detail: format!(
+                                "installed ({}), but not loaded — run `pa2pa service restart`",
+                                p.display()
+                            ),
+                        }),
+                    }
+                } else {
+                    checks.push(ServiceCheck {
+                        name: label.to_string(),
+                        status: CheckStatus::Warn,
+                        detail: format!("installed ({}), launchctl state unknown", p.display()),
+                    });
+                }
+            }
         }
     }
 
     #[cfg(target_os = "linux")]
     {
+        let unit_dir = dirs::config_dir().map(|d| d.join("systemd").join("user"));
         for unit in ["pa2pa-daemon.service", "pa2pa-pill.service"] {
+            let installed = unit_dir
+                .as_ref()
+                .map(|d| d.join(unit).exists())
+                .unwrap_or(false);
+            if !installed {
+                checks.push(ServiceCheck {
+                    name: unit.to_string(),
+                    status: CheckStatus::Missing,
+                    detail: "not installed".to_string(),
+                });
+                continue;
+            }
             let out = Command::new("systemctl")
                 .args(["--user", "is-active", unit])
                 .output();
             let state = out
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
                 .unwrap_or_else(|_| "unknown".into());
-            println!("  {unit} : {state}");
+            let status = if state == "active" {
+                CheckStatus::Ok
+            } else {
+                CheckStatus::Warn
+            };
+            checks.push(ServiceCheck {
+                name: unit.to_string(),
+                status,
+                detail: state,
+            });
         }
     }
 
@@ -124,28 +293,134 @@ pub fn service_status() -> Result<()> {
     {
         if let Some(startup) = windows_startup_dir() {
             let vbs = startup.join("pa2pa.vbs");
-            println!(
-                "  pa2pa.vbs : {}",
-                if vbs.exists() {
-                    format!("installed ({})", vbs.display())
-                } else {
-                    "not installed".to_string()
-                }
-            );
+            if vbs.exists() {
+                checks.push(ServiceCheck {
+                    name: "pa2pa.vbs".to_string(),
+                    status: CheckStatus::Ok,
+                    detail: format!("installed ({})", vbs.display()),
+                });
+            } else {
+                checks.push(ServiceCheck {
+                    name: "pa2pa.vbs".to_string(),
+                    status: CheckStatus::Missing,
+                    detail: "not installed".to_string(),
+                });
+            }
         }
     }
 
+    checks
+}
+
+pub fn service_status() -> Result<()> {
+    let checks = inspect_services();
+    if checks.is_empty() {
+        println!("  No service inspection available on this platform.");
+        return Ok(());
+    }
+    for c in checks {
+        println!("  [{}] {:<22} {}", c.status.tag(), c.name, c.detail);
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn combined_output(out: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    match (stderr.is_empty(), stdout.is_empty()) {
+        (false, true) => stderr,
+        (true, false) => stdout,
+        (false, false) => format!("{stderr} ({stdout})"),
+        (true, true) => format!("exit status {}", out.status),
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaunchdState {
+    Running(u32),
+    Loaded,
+    NotLoaded,
+}
+
+#[cfg(target_os = "macos")]
+fn macos_uid() -> Result<String> {
+    let out = Command::new("id").arg("-u").output()?;
+    if !out.status.success() {
+        bail!("Could not determine current UID via `id -u`");
+    }
+    let uid = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if uid.is_empty() || !uid.chars().all(|c| c.is_ascii_digit()) {
+        bail!("Unexpected output from `id -u`: `{uid}`");
+    }
+    Ok(uid)
+}
+
+#[cfg(target_os = "macos")]
+fn launchctl_service_state(uid: &str, label: &str) -> LaunchdState {
+    let target = format!("gui/{uid}/{label}");
+    let Ok(out) = Command::new("launchctl")
+        .args(["print", &target])
+        .output()
+    else {
+        return LaunchdState::NotLoaded;
+    };
+    if !out.status.success() {
+        return LaunchdState::NotLoaded;
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("pid = ") {
+            if let Ok(pid) = rest.trim().parse::<u32>() {
+                return LaunchdState::Running(pid);
+            }
+        }
+    }
+    LaunchdState::Loaded
+}
+
+#[cfg(target_os = "macos")]
+fn launchctl_is_loaded(uid: &str, label: &str) -> bool {
+    !matches!(launchctl_service_state(uid, label), LaunchdState::NotLoaded)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_reload_launch_agent(uid: &str, label: &str, plist_path: &Path) -> Result<()> {
+    if launchctl_is_loaded(uid, label) {
+        let target = format!("gui/{uid}/{label}");
+        let _ = Command::new("launchctl")
+            .args(["bootout", &target])
+            .output();
+        // Give launchd a brief moment to release the service label before bootstrapping again.
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+
+    let domain = format!("gui/{uid}");
+    let out = Command::new("launchctl")
+        .args(["bootstrap", &domain])
+        .arg(plist_path)
+        .output()?;
+    if !out.status.success() {
+        bail!(
+            "Failed to load macOS LaunchAgent `{label}` ({}): {}",
+            plist_path.display(),
+            combined_output(&out)
+        );
+    }
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
 fn install_macos_launchd(
     paths: &Pa2paPaths,
-    pa2pa_exe: &PathBuf,
+    pa2pa_exe: &Path,
     pill_exe: Option<&PathBuf>,
     ui_url: &str,
     with_pill: bool,
 ) -> Result<()> {
+    let uid = macos_uid()?;
     let home = dirs::home_dir().ok_or_else(|| anyhow!("Cannot locate HOME"))?;
     let agents_dir = home.join("Library").join("LaunchAgents");
     let logs_dir = paths.home.join("logs");
@@ -184,15 +459,11 @@ fn install_macos_launchd(
 
     let daemon_path = agents_dir.join("dev.pa2pa.daemon.plist");
     fs::write(&daemon_path, daemon_plist)?;
-    let _ = Command::new("launchctl")
-        .args(["unload", "-w"])
-        .arg(&daemon_path)
-        .status();
-    let _ = Command::new("launchctl")
-        .args(["load", "-w"])
-        .arg(&daemon_path)
-        .status();
-    println!("Installed & started macOS daemon LaunchAgent: {}", daemon_path.display());
+    macos_reload_launch_agent(&uid, "dev.pa2pa.daemon", &daemon_path)?;
+    println!(
+        "Installed & started macOS daemon LaunchAgent: {}",
+        daemon_path.display()
+    );
 
     if with_pill {
         if let Some(pill) = pill_exe {
@@ -226,14 +497,7 @@ fn install_macos_launchd(
             );
             let pill_path = agents_dir.join("dev.pa2pa.pill.plist");
             fs::write(&pill_path, pill_plist)?;
-            let _ = Command::new("launchctl")
-                .args(["unload", "-w"])
-                .arg(&pill_path)
-                .status();
-            let _ = Command::new("launchctl")
-                .args(["load", "-w"])
-                .arg(&pill_path)
-                .status();
+            macos_reload_launch_agent(&uid, "dev.pa2pa.pill", &pill_path)?;
             println!(
                 "Installed & started macOS menu bar + floating pill LaunchAgent: {}",
                 pill_path.display()
@@ -257,7 +521,7 @@ fn xml_escape(s: &str) -> String {
 #[cfg(target_os = "linux")]
 fn systemd_quote(s: &str) -> Result<String> {
     if s.chars().any(|c| c.is_control()) {
-        anyhow::bail!("Path contains unsafe control characters");
+        bail!("Path contains unsafe control characters");
     }
     Ok(format!(
         "\"{}\"",
@@ -268,7 +532,7 @@ fn systemd_quote(s: &str) -> Result<String> {
 #[cfg(target_os = "linux")]
 fn install_linux_systemd(
     paths: &Pa2paPaths,
-    pa2pa_exe: &PathBuf,
+    pa2pa_exe: &Path,
     pill_exe: Option<&PathBuf>,
     ui_url: &str,
     with_pill: bool,
@@ -290,11 +554,20 @@ fn install_linux_systemd(
     fs::write(&daemon_path, daemon_unit)?;
     let _ = Command::new("systemctl")
         .args(["--user", "daemon-reload"])
-        .status();
-    let _ = Command::new("systemctl")
+        .output();
+    let enable_out = Command::new("systemctl")
         .args(["--user", "enable", "--now", "pa2pa-daemon.service"])
-        .status();
-    println!("Installed & started systemd user service: {}", daemon_path.display());
+        .output()?;
+    if !enable_out.status.success() {
+        bail!(
+            "Failed to enable/start pa2pa-daemon.service via systemctl: {}",
+            combined_output(&enable_out)
+        );
+    }
+    println!(
+        "Installed & started systemd user service: {}",
+        daemon_path.display()
+    );
 
     if with_pill {
         if let Some(pill) = pill_exe {
@@ -309,10 +582,16 @@ fn install_linux_systemd(
             fs::write(&pill_path, pill_unit)?;
             let _ = Command::new("systemctl")
                 .args(["--user", "daemon-reload"])
-                .status();
-            let _ = Command::new("systemctl")
+                .output();
+            let pill_out = Command::new("systemctl")
                 .args(["--user", "enable", "--now", "pa2pa-pill.service"])
-                .status();
+                .output()?;
+            if !pill_out.status.success() {
+                bail!(
+                    "Failed to enable/start pa2pa-pill.service via systemctl: {}",
+                    combined_output(&pill_out)
+                );
+            }
             println!(
                 "Installed & started systemd tray/pill service: {}",
                 pill_path.display()
@@ -339,7 +618,7 @@ fn windows_startup_dir() -> Option<PathBuf> {
 #[cfg(target_os = "windows")]
 fn install_windows_startup(
     paths: &Pa2paPaths,
-    pa2pa_exe: &PathBuf,
+    pa2pa_exe: &Path,
     _pill_exe: Option<&PathBuf>,
     _ui_url: &str,
     with_pill: bool,
@@ -352,7 +631,7 @@ fn install_windows_startup(
     if exe_str.chars().any(|c| c.is_control() || c == '"')
         || home_str.chars().any(|c| c.is_control() || c == '"')
     {
-        anyhow::bail!("Executable or home path contains unsafe characters for Windows Startup VBS");
+        bail!("Executable or home path contains unsafe characters for Windows Startup VBS");
     }
     let pill_flag = if with_pill { " --pill" } else { "" };
     let vbs = format!(

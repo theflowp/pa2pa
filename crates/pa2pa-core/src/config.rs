@@ -10,16 +10,20 @@ pub struct Pa2paPaths {
 }
 
 impl Pa2paPaths {
+    pub fn default_home() -> Result<PathBuf> {
+        let base = dirs::config_dir()
+            .or_else(dirs::home_dir)
+            .context("Could not determine home/config directory")?;
+        Ok(base.join("pa2pa"))
+    }
+
     pub fn resolve(explicit_home: Option<PathBuf>) -> Result<Self> {
         let home = if let Some(h) = explicit_home {
             h
         } else if let Ok(env_home) = std::env::var("PA2PA_HOME") {
             PathBuf::from(env_home)
         } else {
-            let base = dirs::config_dir()
-                .or_else(dirs::home_dir)
-                .context("Could not determine home/config directory")?;
-            base.join("pa2pa")
+            Self::default_home()?
         };
         Ok(Self { home })
     }

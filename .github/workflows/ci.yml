@@ -27,10 +27,15 @@ jobs:
 
   security-audit:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@v4
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          ignore-advisories: ""
+          # ssh-key uses default-features = false (ed25519 only); rsa and crypto-bigint are NOT compiled into pa2pa,
+          # only listed in Cargo.lock as disabled optional dependencies of ssh-key.
+          ignore-advisories: "RUSTSEC-2023-0071,RUSTSEC-2026-0387"
 

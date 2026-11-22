@@ -51,7 +51,10 @@ enum Commands {
         /// Explicit path to an existing Ed25519 OpenSSH private key
         #[arg(long)]
         ssh_key: Option<PathBuf>,
-        /// Always generate a dedicated unencrypted Ed25519 key in pa2pa home instead of reusing ~/.ssh/id_ed25519
+        /// Reuse your primary ~/.ssh/id_ed25519 key (allows colleagues to add you via `--github <user>`)
+        #[arg(long)]
+        reuse_ssh_key: bool,
+        /// Generate a dedicated Ed25519 key in pa2pa home (now the default; kept for compatibility)
         #[arg(long)]
         dedicated_key: bool,
         /// Default headless agent runner (claude, codex, hermes, antigravity, t3, vibe, opencode, custom, none)
@@ -206,15 +209,15 @@ enum Commands {
 
     /// Show or automatically apply MCP configuration for supported AI agents
     SetupMcp {
-        /// Automatically write MCP configuration for detected tools (Claude Code, Codex, OpenCode, Cursor, Vibe)
+        /// Automatically write MCP configuration for detected tools (Claude Code, Codex, Antigravity, Mistral Vibe, OpenCode, Cursor)
         #[arg(long)]
         apply: bool,
-        /// Target tool when using --apply (all, claude, codex, opencode, cursor, vibe)
+        /// Target tool when using --apply (all, claude, codex, antigravity, vibe, opencode, cursor)
         #[arg(long, default_value = "all")]
         target: String,
     },
 
-    /// Check local setup, SSH key, relay connectivity, and installed agent CLIs
+    /// Check local setup, SSH key, MCP registrations, background services, and installed agent CLIs
     Doctor,
 }
 
@@ -226,6 +229,8 @@ enum ServiceCmd {
         #[arg(long)]
         no_pill: bool,
     },
+    /// Restart installed pa2pa login services (useful after upgrading binaries)
+    Restart,
     /// Stop and uninstall pa2pa login services
     Uninstall,
     /// Show status of installed background services
@@ -309,6 +314,7 @@ async fn main() -> Result<()> {
             relay,
             transport,
             ssh_key,
+            reuse_ssh_key,
             dedicated_key,
             runner,
             ui_bind,
@@ -321,6 +327,7 @@ async fn main() -> Result<()> {
                 relay,
                 transport,
                 ssh_key,
+                reuse_ssh_key,
                 dedicated_key,
                 runner,
                 ui_bind,
@@ -385,6 +392,7 @@ async fn main() -> Result<()> {
         }
         Commands::Service { action } => match action {
             ServiceCmd::Install { no_pill } => service::install_service(&paths, !no_pill)?,
+            ServiceCmd::Restart => service::restart_service()?,
             ServiceCmd::Uninstall => service::uninstall_service()?,
             ServiceCmd::Status => service::service_status()?,
         },
@@ -423,6 +431,7 @@ fn cmd_init(
     relay: Option<String>,
     transport: TransportMode,
     ssh_key: Option<PathBuf>,
+    reuse_ssh_key: bool,
     dedicated_key: bool,
     runner: RunnerKind,
     ui_bind: String,
@@ -443,45 +452,35 @@ fn cmd_init(
         .to_ascii_lowercase();
     let display = display_name.unwrap_or_else(|| alias.clone());
 
+    let mut used_dedicated_key = false;
     let (key_path, identity) = if let Some(explicit) = ssh_key {
         let id = Identity::load_openssh(&explicit)?;
+        println!("Using explicit SSH Ed25519 key: {}", explicit.display());
         (explicit, id)
-    } else if !dedicated_key {
-        let default_ssh = dirs::home_dir().map(|h| h.join(".ssh").join("id_ed25519"));
-        if let Some(ref ssh_p) = default_ssh {
-            if ssh_p.exists() {
-                match Identity::load_openssh(ssh_p) {
-                    Ok(id) => {
-                        println!("Reusing existing SSH Ed25519 key: {}", ssh_p.display());
-                        (ssh_p.clone(), id)
-                    }
-                    Err(e) => {
-                        println!(
-                            "Could not reuse {} ({e}); generating dedicated key in pa2pa home.",
-                            ssh_p.display()
-                        );
-                        let p = paths.dedicated_key_path();
-                        let id = Identity::generate(&format!("{alias}@pa2pa"))?;
-                        id.save_openssh(&p, &format!("{alias}@pa2pa"))?;
-                        (p, id)
-                    }
-                }
-            } else {
-                let p = paths.dedicated_key_path();
-                let id = Identity::generate(&format!("{alias}@pa2pa"))?;
-                id.save_openssh(&p, &format!("{alias}@pa2pa"))?;
-                (p, id)
-            }
-        } else {
-            let p = paths.dedicated_key_path();
-            let id = Identity::generate(&format!("{alias}@pa2pa"))?;
-            id.save_openssh(&p, &format!("{alias}@pa2pa"))?;
-            (p, id)
+    } else if reuse_ssh_key && !dedicated_key {
+        let default_ssh = dirs::home_dir()
+            .ok_or_else(|| anyhow!("Cannot locate HOME directory for --reuse-ssh-key"))?
+            .join(".ssh")
+            .join("id_ed25519");
+        if !default_ssh.exists() {
+            bail!(
+                "--reuse-ssh-key was requested, but {} does not exist. \
+                 Pass --ssh-key <path> or omit --reuse-ssh-key to generate a dedicated pa2pa key.",
+                default_ssh.display()
+            );
         }
+        let id = Identity::load_openssh(&default_ssh)?;
+        println!("Reusing existing SSH Ed25519 key: {}", default_ssh.display());
+        (default_ssh, id)
     } else {
+        used_dedicated_key = true;
         let p = paths.dedicated_key_path();
         let id = Identity::generate(&format!("{alias}@pa2pa"))?;
         id.save_openssh(&p, &format!("{alias}@pa2pa"))?;
+        println!(
+            "Generated dedicated 0600 Ed25519 key at {} (keeps your ~/.ssh/id_ed25519 untouched and isolated from the background daemon).",
+            p.display()
+        );
         (p, id)
     };
 
@@ -524,6 +523,13 @@ fn cmd_init(
     );
     println!("\nShare this 1-line invite URI with trusted colleagues:");
     println!("  {invite}");
+    if used_dedicated_key {
+        println!(
+            "\nNote: Because pa2pa uses a dedicated key (not your GitHub SSH key), colleagues must add you\n\
+             using the `pa2pa://v1/...` invite link above (not `--github <user>`). To reuse ~/.ssh/id_ed25519\n\
+             instead so `--github <user>` works, reinitialize with `pa2pa init --force --reuse-ssh-key`."
+        );
+    }
     Ok(())
 }
 
@@ -1096,17 +1102,49 @@ async fn cmd_doctor(paths: &Pa2paPaths) -> Result<()> {
             } else {
                 println!("  [OK] Relay          : none (pure zero-server P2P mode)");
             }
+
+            let daemon_url = format!("http://{}/", cfg.daemon.ui_bind);
+            match reqwest::Client::builder()
+                .timeout(Duration::from_secs(1))
+                .build()?
+                .get(&daemon_url)
+                .send()
+                .await
+            {
+                Ok(r) if r.status().is_success() => {
+                    println!("  [OK] Local daemon   : reachable at {daemon_url}");
+                }
+                Ok(r) => {
+                    println!("  [WARN] Local daemon : HTTP {} at {daemon_url}", r.status());
+                }
+                Err(_) => {
+                    println!(
+                        "  [WARN] Local daemon : not reachable at {daemon_url} (start with `pa2pa service install` or `pa2pa daemon`)"
+                    );
+                }
+            }
         }
         Err(_) => {
             println!("  [WARN] Not initialized yet — run `pa2pa init`.");
         }
     }
 
+    println!("\nBackground services:");
+    for s in service::inspect_services() {
+        println!("  [{:<4}] {:<22} {}", s.status.tag(), s.name, s.detail);
+    }
+
+    println!("\nMCP registrations:");
+    for m in setup_mcp::inspect_mcp_registrations(paths) {
+        println!("  [{:<4}] {:<14} {}", m.status.tag(), m.tool, m.detail);
+    }
+
     println!("\nDetected headless agent runners:");
     for r in detect_installed_runners() {
         let mark = if r.installed { "OK" } else { "--" };
         println!(
-            "  [{mark}] {:<18} ({:<8}) {}",
+            "  [{:<4}] {:<18} ({:<8}) {}",
+            mark,
             r.label,
             r.binary,
             r.path.unwrap_or_else(|| "not in PATH".into())
